@@ -34,12 +34,15 @@ def main():
         view = Renderer(a.seed, width=640, height=480, headless=False, window=(960, 720), gpu=True)
         view.env.js("() => { __bot.hideUI = false; }")
     acts, prev, t0 = [], 0, time.time()
+    danger = False
     score = 0
     try:
         for t in range(a.max_steps):
-            if t % 2 == 0:
+            # Re-plan every other step, or every step while in danger.
+            if t % 2 == 0 or danger:
                 vals = P.eval()["vals"]
                 ai = teacher_pick(vals, prev)
+                danger = max(vals) <= 1
             else:
                 ai = P.planned()
             (b, dead) = P.step(ai)

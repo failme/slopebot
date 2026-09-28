@@ -100,7 +100,7 @@ def run_episode(student, seed, watch=False, record=None, max_steps=100000, verbo
     return score, t + 1
 
 
-def replay(path, watch=True, window=(960, 720), record=None, res=(640, 480)):
+def replay(path, watch=True, window=(960, 720), record=None, res=(640, 480), clip_from=0):
     """Replay a recorded input sequence (e.g. from planner_run.py). The game is deterministic,
     so the same seed + inputs reproduce the run exactly (at 20 frames/s, as it was played).
     The game's own HUD is shown."""
@@ -112,11 +112,11 @@ def replay(path, watch=True, window=(960, 720), record=None, res=(640, 480)):
     video = VideoWriter(record) if record else None
     t_next = time.time()
     try:
-        for c in run["actions"]:
+        for t, c in enumerate(run["actions"]):
             _, dead = R.step(ACTIONS["NLR".index(c)])
             if watch:
                 t_next = pace(t_next)
-            if video:
+            if video and t >= clip_from:
                 video.add(R.frame())
             if dead:
                 break
@@ -142,10 +142,11 @@ def main():
     ap.add_argument("--window", default="960x720", help="browser window size in watch mode")
     ap.add_argument("--record", default=None, help="save a video (.webm or .gif) of the (first) episode")
     ap.add_argument("--replay", default=None, help="replay a recorded run (from planner_run.py)")
+    ap.add_argument("--clip-from", type=int, default=0, help="with --replay --record: start the video at this step")
     a = ap.parse_args()
     window = tuple(int(v) for v in a.window.split("x"))
     if a.replay:
-        print("score", replay(a.replay, watch=a.watch, window=window, record=a.record))
+        print("score", replay(a.replay, watch=a.watch, window=window, record=a.record, clip_from=a.clip_from))
         return
     if not os.path.exists(a.model):
         raise SystemExit(f"no model at {a.model}: train one with bot/train.py (see README), "

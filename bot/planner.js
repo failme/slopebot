@@ -122,7 +122,7 @@
   // Surviving plans are carried over to the next step (see commit), so usually the first
   // candidate tried already survives.
   B.evalActions = function (cfg) {
-    cfg = Object.assign({ horizon: 72, cap: 2, tries: 12, random: 30 }, cfg || {});
+    cfg = Object.assign({ horizon: 72, cap: 2, tries: 12, random: 30, extra: 48 }, cfg || {});
     const s0 = this.save(this._ps); this._ps = s0;
     const H = cfg.horizon;
     rs = (Math.floor(this.now()) * 2654435761) >>> 0 || 1;
@@ -166,6 +166,26 @@
       // With no survivor, carry over the plan that lived longest: following it buys time
       // for the moving horizon to reveal a way out.
       survivors.push(ok > 0 ? surv : (bestSeq ? [bestSeq] : []));
+    }
+    // Danger: nothing (or only one plan) survives. Spend extra random proposals on the
+    // actions that have no survivor yet, branching around the longest-lived plans too.
+    if (Math.max(...vals) <= 1 && cfg.extra > 0) {
+      for (let ai = 0; ai < 3; ai++) {
+        if (vals[ai] > 0) continue;
+        const a = ACTS[ai];
+        let best = (vals[ai] + 1) * H, bestSeq = survivors[ai][0] || null;
+        const more = conts(H - 1, cfg.extra).slice(-cfg.extra);
+        for (const c of more) {
+          const seq = [[a, 1], ...c];
+          const n = len(seq);
+          if (n < H) seq.push([null, H - n]);
+          this.load(s0);
+          const r = this.rollout(seq); rolls++;
+          if (!r.dead) { vals[ai] = 1; survivors[ai] = [seq]; break; }
+          if (r.t > best) { best = r.t; bestSeq = seq; }
+        }
+        if (vals[ai] <= 0) { vals[ai] = best / H - 1; survivors[ai] = bestSeq ? [bestSeq] : []; }
+      }
     }
     this.load(s0);
     this._cand = survivors;
