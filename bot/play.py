@@ -106,10 +106,13 @@ def replay(path, watch=True, window=(960, 720), record=None, res=(640, 480), cli
     The game's own HUD is shown."""
     with open(path) as f:
         run = json.load(f)
+    total = len(run["actions"])
+    print(f"loading the game (seed {run['seed']})...", file=sys.stderr, flush=True)
     R = Renderer(run["seed"], width=res[0], height=res[1], headless=not watch,
                  window=window if watch else None, gpu=watch)
     R.env.js("() => { __bot.hideUI = false; }")
     video = VideoWriter(record) if record else None
+    bar = Progress(total, "recording" if record else "replaying")
     t_next = time.time()
     try:
         for t, c in enumerate(run["actions"]):
@@ -118,9 +121,12 @@ def replay(path, watch=True, window=(960, 720), record=None, res=(640, 480), cli
                 t_next = pace(t_next)
             if video and t >= clip_from:
                 video.add(R.frame())
+            if t % 20 == 0 or dead or t == total - 1:
+                bar.update(t + 1, R.score())
             if dead:
                 break
         score = R.score()
+        bar.done(score)
         if video:  # hold the final frame for a second
             for _ in range(1000 // STEP_MS):
                 video.add(R.frame())
@@ -129,8 +135,44 @@ def replay(path, watch=True, window=(960, 720), record=None, res=(640, 480), cli
     finally:
         R.close()
         if video:
+            print(f"finishing video {record}...", file=sys.stderr, flush=True)
             video.close()
+            print(f"saved {record}", file=sys.stderr, flush=True)
     return score
+
+
+class Progress:
+    """Single-line text progress bar on stderr: steps, percent, score, elapsed and ETA."""
+
+    def __init__(self, total, label):
+        self.total, self.label, self.t0 = total, label, time.time()
+        self.tty = sys.stderr.isatty()
+        self.last_pct = -1
+
+    def update(self, n, score):
+        pct = int(100 * n / max(1, self.total))
+        if not self.tty and pct // 5 == self.last_pct // 5:
+            return  # when output isn't a terminal, only print every 5%
+        self.last_pct = pct
+        if n <= 1:
+            self.t0 = time.time()  # the first step includes one-off warm-up; don't skew the ETA
+        el = time.time() - self.t0
+        eta = el / (n - 1) * (self.total - n) if n > 1 else 0
+        width = 30
+        fill = int(width * n / max(1, self.total))
+        line = (f"{self.label} [{'#' * fill}{'.' * (width - fill)}] {pct:3d}%  "
+                f"step {n}/{self.total}  score {score}  {fmt(el)} elapsed, ~{fmt(eta)} left")
+        print(("\r" + line) if self.tty else line, end="" if self.tty else "\n", file=sys.stderr, flush=True)
+
+    def done(self, score):
+        if self.tty:
+            print(file=sys.stderr)
+        print(f"{self.label} finished: score {score} in {fmt(time.time() - self.t0)}", file=sys.stderr, flush=True)
+
+
+def fmt(sec):
+    sec = int(sec)
+    return f"{sec // 60}m{sec % 60:02d}s"
 
 
 def main():
