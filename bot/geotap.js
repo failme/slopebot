@@ -34,12 +34,17 @@ window.__installGeoTap = (gl) => {
 
   const G = window.__bot.geo = {
     TRACK: 34, OBSTACLE: 35,   // texture ids (load order is deterministic)
+    TRACK2: 45,                 // a few special track tiles use this one
     on: false,
     track: [], obst: [],        // flat [x,y,z, x,y,z, x,y,z, ...] world-space triangles, last frame
-    begin() { this.track = []; this.obst = []; },
+    begin() { this.track = []; this.obst = []; this.other = {}; },
+    other: {},                  // debugging (all = true): triangles drawn with any other texture
+    all: false,
   };
   W('drawElements', a => {
-    if (!G.on || (tex !== G.TRACK && tex !== G.OBSTACLE)) return;
+    if (!G.on) return;
+    const isTrack = tex === G.TRACK || tex === G.TRACK2;
+    if (!isTrack && tex !== G.OBSTACLE && !G.all) return;
     const cnt = a[1], type = a[2], off = a[3];
     if (cnt === 2304) return;  // the ball mesh (same texture as the track)
     const ib = data.get(el), p = ptr[0];
@@ -48,7 +53,7 @@ window.__installGeoTap = (gl) => {
     if (!vb) return;
     const idx = type === gl.UNSIGNED_SHORT ? new Uint16Array(ib.buffer, off, cnt) : new Uint32Array(ib.buffer, off, cnt);
     const f = new Float32Array(vb.buffer, 0, vb.byteLength >> 2), m = o2w.get(prog);
-    const out = tex === G.TRACK ? G.track : G.obst;
+    const out = isTrack ? G.track : tex === G.OBSTACLE ? G.obst : (G.other[tex] = G.other[tex] || []);
     for (let k = 0; k < cnt; k++) {
       const v = (idx[k] * p.stride + p.off) >> 2;
       const x = f[v], y = f[v + 1], z = f[v + 2];

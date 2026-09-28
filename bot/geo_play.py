@@ -45,7 +45,7 @@ def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
     e = open_game(seed, watch, window)
     if not watch:
         e.js("() => { __bot.norender = true; }")   # geometry is still captured
-    a, t, t0, score, worst = 0, 0, time.time(), 0, 0.0
+    a, t, t0, score, worst, total_ms = 0, 0, time.time(), 0, 0.0, 0.0
     recent = []
     try:
         chunk = 1 if watch else 1
@@ -54,7 +54,7 @@ def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
             a, dead, score, last = e.js(STEP_JS, [a, chunk, watch])
             t += chunk
             if last:
-                worst = max(worst, last["ms"])
+                worst = max(worst, last["ms"]); total_ms += last["ms"]
                 recent.append(last["surv"]); recent = recent[-40:]
             if watch:
                 t_next = max(t_next + 0.05, time.time() - 0.2)
@@ -68,7 +68,7 @@ def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
                 break
     finally:
         e.close()
-    return score, t, worst
+    return score, t, worst, total_ms / max(1, t)
 
 
 def main():
@@ -87,9 +87,9 @@ def main():
         seeds = [random.randint(1, 1 << 30)]
     scores = []
     for s in seeds:
-        sc, steps, worst = play(s, a.watch, a.max_steps)
+        sc, steps, worst, mean_ms = play(s, a.watch, a.max_steps)
         scores.append(sc)
-        print(f"seed {s}: score {sc} ({steps} steps, slowest decision {worst:.1f} ms)", flush=True)
+        print(f"seed {s}: score {sc} ({steps} steps, decisions {mean_ms:.1f} ms on average, slowest {worst:.1f} ms)", flush=True)
     if len(scores) > 1:
         print("scores", scores, "mean", sum(scores) / len(scores))
 

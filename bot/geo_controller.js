@@ -14,56 +14,72 @@
 
   // ---- model constants (units per 50 ms step), see fit_model.py -----------------------------
   const P = B.ctlParams = {
-    // fitted on ~5800 grounded steps of the controller's own games (R^2 0.89)
-    k1: 0.0366, k1v: 0.0011,  // sideways velocity change from the key pressed one step ago (+ per unit of forward speed)
-    k2: 0.0404, k2v: 0.0016,  // ... and from the key pressed two steps ago
-    drag: 0.0393,             // sideways velocity decay per step
-    bank: 0.075,              // sideways pull per unit of sideways surface slope (banked track)
-    g: 0.18,                  // gravity (per step^2)
-    off: 0.7,                 // ball centre height above the surface
-    snap: 1.0,                // how far below free fall the surface may be for the ball to stay on it (+0.3 per unit of speed)
-    rad: 0.5,                 // ball radius (death test); safety margins are handled in plan scoring
+    // Per-step quantities scale with the game's time scale ts (Time.timeScale, read from
+    // memory; it grows from ~2.75 to ~3.4 during a game): accelerations with ts^2, drag with ts.
+    // Fitted on ~5000 steps of real games (R^2 0.99 for the sideways response).
+    k1: 0.00408, k2: 0.00456, // sideways velocity change from the key held last step / the step before (x ts^2)
+    dg: 0.00865,              // sideways rolling friction on the ground (x ts)
+    bank: 0.0069,             // sideways pull per unit of sideways surface slope (x ts^2)
+    a0: -0.00439, a1: 0.00655, a2: 0.0005,  // along-track acceleration on the ground (see simStep)
+    g: 0.01834,               // gravity (x ts^2)
+    landT: 0.92, landN: 0.51, // impact: speed along the surface after = landT * before + landN * (normal speed, < 0)
+    wallE: 0.3,               // restitution when bouncing off a wall
+    da: 0.00086, dax: 0.00127, fz: 0.00152,  // air drag, sideways air drag (x ts), forward push in the air (x ts^2)
+    rad: 0.495,               // ball radius
+    tsAddr: 26580708,         // Time.timeScale (float) in the Emscripten heap
+    reach: 0.3,               // a surface whose plane passes this far above the ball's last contact is a wall/block top, not a ramp
     airDead: 40,              // steps airborne that count as falling off
     voidDead: 12,             // steps with no surface anywhere below that count as falling off
     horizon: 60,              // simulated steps per plan
     edgeW: 1.2,               // lateral distance at which a missing floor / obstacle counts as "close"
     decal: -1e9,              // red geometry less than this above the floor is a marking, not an obstacle
-    up: 0.4, upV: 0.35,       // how far above the ball's continued path a surface may be and still be rolled onto
     clearSteps: 30,           // steps over which clearance to obstacles / edges is measured
     clearCap: 1.5,            // clearance beyond this doesn't count
     clearW: 25,               // score per unit of clearance (1 step of survival = 10)
     airW: 3,                  // penalty per airborne step (leaving the surface is where predictions are worst)
+    wallW: 150,               // penalty for bouncing off a wall (predictions after that are poor)
   };
 
   // ---- height map --------------------------------------------------------------------------
   const DX = 0.5, NX = 128, DZ = 1.0, NZ = 640;
-  // Up to three surface heights per cell (highest first), so a tunnel roof or a bridge above
-  // doesn't hide the floor under it.
-  const L0 = new Float32Array(NX * NZ), L1 = new Float32Array(NX * NZ), L2 = new Float32Array(NX * NZ);
-  const floor = L0;
+  // Up to three surfaces per cell (highest first), so a tunnel roof or a bridge above doesn't
+  // hide the floor under it. Each is the plane of its triangle: height at the cell centre and
+  // slopes dy/dx, dy/dz, so heights are exact anywhere in the cell.
+  const NL = 3, LH = new Float32Array(NX * NZ * NL), LGX = new Float32Array(NX * NZ * NL), LGZ = new Float32Array(NX * NZ * NL);
+  const L0 = new Float32Array(NX * NZ);   // top surface height per cell (for tracing / debugging)
   let x0 = 0, z0 = 0, zMax = 0;
 
   function clear(bx, bz) {
     x0 = bx - NX * DX / 2; z0 = bz - 8;
-    L0.fill(-Infinity); L1.fill(-Infinity); L2.fill(-Infinity);
+    LH.fill(-Infinity); L0.fill(-Infinity);
     zMax = -Infinity;
+    WALLS = []; wallGrid = new Array(GNX * GNZ);
   }
-  function addSurface(k, y) {
-    const a = L0[k], b = L1[k];
-    if (Math.abs(y - a) < 0.3 || Math.abs(y - b) < 0.3 || Math.abs(y - L2[k]) < 0.3) {
-      if (Math.abs(y - a) < 0.3 && y > a) L0[k] = y;   // same surface: keep the higher sample
-      return;
+  function addSurface(k, y, gx, gz) {
+    const b = k * NL;
+    let l = 0;
+    for (; l < NL; l++) {
+      const h = LH[b + l];
+      if (Math.abs(y - h) < 0.3) { if (y > h) { LH[b + l] = y; LGX[b + l] = gx; LGZ[b + l] = gz; } return; }  // same surface
+      if (y > h) break;
     }
-    if (y > a) { L2[k] = b; L1[k] = a; L0[k] = y; }
-    else if (y > b) { L2[k] = b; L1[k] = y; }
-    else if (y > L2[k]) L2[k] = y;
+    if (l >= NL) return;
+    for (let m = NL - 1; m > l; m--) { LH[b + m] = LH[b + m - 1]; LGX[b + m] = LGX[b + m - 1]; LGZ[b + m] = LGZ[b + m - 1]; }
+    LH[b + l] = y; LGX[b + l] = gx; LGZ[b + l] = gz;
+    if (l === 0) L0[k] = y;
   }
   // Rasterise one track triangle (world coords) into the surface layers.
   function tri(ax, ay, az, bx, by, bz, cx, cy, cz) {
     const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
     const ny = uz * vx - ux * vz, nx = uy * vz - uz * vy, nz = ux * vy - uy * vx;
     const nl = Math.hypot(nx, ny, nz) || 1;
-    if (Math.abs(ny) / nl < 0.3) return;             // walls/sides: not something to roll on
+    if (Math.abs(ny) / nl < 0.3) {                   // walls/sides: not something to roll on
+      const w = WALLS.length;
+      WALLS.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+      gridAdd(wallGrid, w, Math.min(ax, bx, cx), Math.max(ax, bx, cx), Math.min(az, bz, cz), Math.max(az, bz, cz));
+      return;
+    }
+    const gx = -nx / ny, gz = -nz / ny;              // plane slopes dy/dx, dy/dz
     const minx = Math.min(ax, bx, cx), maxx = Math.max(ax, bx, cx), minz = Math.min(az, bz, cz), maxz = Math.max(az, bz, cz);
     let i0 = Math.floor((minx - x0) / DX), i1 = Math.floor((maxx - x0) / DX), j0 = Math.floor((minz - z0) / DZ), j1 = Math.floor((maxz - z0) / DZ);
     if (i1 < 0 || j1 < 0 || i0 >= NX || j0 >= NZ) return;
@@ -77,32 +93,65 @@
         const px = x0 + (i + 0.5) * DX, wx = px - ax, wz = pz - az;
         const s = (wx * vz - wz * vx) / d, t = (ux * wz - uz * wx) / d;
         if (s < -0.02 || t < -0.02 || s + t > 1.02) continue;
-        addSurface(j * NX + i, ay + s * uy + t * vy);
+        addSurface(j * NX + i, ay + s * uy + t * vy, gx, gz);
       }
     }
   }
   function buildMap(ball) {
     clear(ball[0], ball[2]);
-    const T = G.track, O = G.obst;
+    const T = G.track;
     for (let i = 0; i + 8 < T.length; i += 9) tri(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8]);
     bucketObstacles();
   }
-  // Highest floor at (x, z) that is not far above y (so an overhead structure isn't taken as floor).
   const cell = (x, z) => {
     const i = Math.floor((x - x0) / DX), j = Math.floor((z - z0) / DZ);
     return (i < 0 || j < 0 || i >= NX || j >= NZ) ? -1 : j * NX + i;
   };
-  // Highest surface at (x, z) that is not above yMax (default: the top surface).
+  // Height at (x, z) of the highest surface there that is not above yMax (-Infinity if none).
+  // Its slopes are left in hit.gx / hit.gz.
+  const hit = { gx: 0, gz: 0 };
   const floorAt = (x, z, yMax = Infinity) => {
     const k = cell(x, z);
     if (k < 0) return -Infinity;
-    if (L0[k] <= yMax) return L0[k];
-    if (L1[k] <= yMax) return L1[k];
-    return L2[k] <= yMax ? L2[k] : -Infinity;
+    const cx = x0 + ((k % NX) + 0.5) * DX, cz = z0 + (Math.floor(k / NX) + 0.5) * DZ;
+    for (let l = k * NL, e = l + NL; l < e; l++) {
+      if (LH[l] === -Infinity) return -Infinity;
+      const h = LH[l] + LGX[l] * (x - cx) + LGZ[l] * (z - cz);
+      if (h <= yMax) { hit.gx = LGX[l]; hit.gz = LGZ[l]; return h; }
+    }
+    return -Infinity;
   };
-  // Obstacles: exact triangles, bucketed by z, tested against the ball sphere.
-  const BZ = 2;
-  let obBuckets = new Map();
+  // The surface at (x, z) that the ball, last touching height yLast at (xl, zl), can roll onto:
+  // the highest one whose plane, extended back to (xl, zl), isn't above yLast (a ramp continues
+  // the surface; a raised block's top doesn't, its side is a wall).
+  const reachable = (x, z, xl, zl, yLast) => {
+    const k = cell(x, z);
+    if (k < 0) return -Infinity;
+    const cx = x0 + ((k % NX) + 0.5) * DX, cz = z0 + (Math.floor(k / NX) + 0.5) * DZ;
+    for (let l = k * NL, e = l + NL; l < e; l++) {
+      if (LH[l] === -Infinity) return -Infinity;
+      const gx = LGX[l], gz = LGZ[l], h = LH[l] + gx * (x - cx) + gz * (z - cz);
+      if (h - gx * (x - xl) - gz * (z - zl) <= yLast + P.reach) { hit.gx = gx; hit.gz = gz; return h; }
+    }
+    return -Infinity;
+  };
+  // Obstacles (red triangles) and walls (track faces too steep to roll on) are kept as exact
+  // triangles in a coarse x/z grid over the map: each cell lists the triangles within GM of it
+  // (over the whole horizon, for moving obstacles), so a query only looks at one cell.
+  const GX = 1, GZ = 2, GNX = NX * DX / GX, GNZ = NZ * DZ / GZ, GM = 2.1;
+  let obGrid = [], wallGrid = [], WALLS = [];
+  const gcell = (x, z) => {
+    const i = Math.floor((x - x0) / GX), j = Math.floor((z - z0) / GZ);
+    return (i < 0 || j < 0 || i >= GNX || j >= GNZ) ? -1 : j * GNX + i;
+  };
+  function gridAdd(grid, idx, xlo, xhi, zlo, zhi) {
+    const i0 = Math.max(0, Math.floor((xlo - GM - x0) / GX)), i1 = Math.min(GNX - 1, Math.floor((xhi + GM - x0) / GX));
+    const j0 = Math.max(0, Math.floor((zlo - GM - z0) / GZ)), j1 = Math.min(GNZ - 1, Math.floor((zhi + GM - z0) / GZ));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const k = j * GNX + i;
+      (grid[k] || (grid[k] = [])).push(idx);
+    }
+  }
   // Obstacle motion: match every red triangle to the same-shaped triangle nearest to it in the
   // previous frame; the offset is its velocity per step (some red blocks slide back and forth).
   let prevShapes = new Map(), vel = new Float32Array(0);
@@ -128,22 +177,22 @@
     prevShapes = shapes;
   }
   function bucketObstacles() {
-    obBuckets = new Map();
+    obGrid = new Array(GNX * GNZ);
     const O = G.obst, H = P.horizon;
     for (let i = 0; i + 8 < O.length; i += 9) {
       const zlo = Math.min(O[i + 2], O[i + 5], O[i + 8]), zhi = Math.max(O[i + 2], O[i + 5], O[i + 8]);
+      const xlo = Math.min(O[i], O[i + 3], O[i + 6]), xhi = Math.max(O[i], O[i + 3], O[i + 6]);
       // skip red markings lying flat on the track
-      const cxm = (O[i] + O[i + 3] + O[i + 6]) / 3, czm = (zlo + zhi) / 2, ym = Math.max(O[i + 1], O[i + 4], O[i + 7]);
+      const cxm = (xlo + xhi) / 2, czm = (zlo + zhi) / 2, ym = Math.max(O[i + 1], O[i + 4], O[i + 7]);
       const f = floorAt(cxm, czm, ym + 1);
       if (f > -Infinity && ym <= f + P.decal) continue;
-      const vz = vel[i / 3 + 2] * H;
-      for (let b = Math.floor((zlo + Math.min(0, vz)) / BZ); b <= Math.floor((zhi + Math.max(0, vz)) / BZ); b++) {
-        if (!obBuckets.has(b)) obBuckets.set(b, []);
-        obBuckets.get(b).push(i);
-      }
+      const vx = vel[i / 3] * H, vz = vel[i / 3 + 2] * H;
+      gridAdd(obGrid, i, xlo + Math.min(0, vx), xhi + Math.max(0, vx), zlo + Math.min(0, vz), zhi + Math.max(0, vz));
     }
   }
-  // squared distance from point p to triangle (a, b, c) (Ericson, Real-Time Collision Detection)
+  // squared distance from point p to triangle (a, b, c) (Ericson, Real-Time Collision Detection);
+  // the closest point is left in cq
+  const cq = { x: 0, y: 0, z: 0 };
   function dist2(px, py, pz, O, i) {
     const ax = O[i], ay = O[i + 1], az = O[i + 2], bx = O[i + 3], by = O[i + 4], bz = O[i + 5], cx = O[i + 6], cy = O[i + 7], cz = O[i + 8];
     const abx = bx - ax, aby = by - ay, abz = bz - az, acx = cx - ax, acy = cy - ay, acz = cz - az;
@@ -174,70 +223,119 @@
         }
       }
     }
+    cq.x = qx; cq.y = qy; cq.z = qz;
     return (px - qx) ** 2 + (py - qy) ** 2 + (pz - qz) ** 2;
   }
-  // Does a ball of radius r at (x, y, z), t steps from now, touch an obstacle (moved on by t steps)?
+  // Does a ball of radius r (<= GM) at (x, y, z), t steps from now, touch an obstacle (moved on by t steps)?
   function hitsObstacle(x, y, z, r, t = 0) {
+    const k = gcell(x, z), L = k < 0 ? null : obGrid[k];
+    if (!L) return false;
     const O = G.obst, r2 = r * r;
-    for (let b = Math.floor((z - r) / BZ); b <= Math.floor((z + r) / BZ); b++) {
-      const L = obBuckets.get(b);
-      if (L) for (const i of L) {
-        const v = i / 3;
-        if (dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i) < r2) return true;
-      }
+    for (const i of L) {
+      const v = i / 3;
+      if (dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i) < r2) return true;
     }
     return false;
   }
 
-  // Distance from the ball centre (at time t) to the nearest obstacle within `lim` (else lim).
+  // Distance from the ball centre (at time t) to the nearest obstacle within lim (<= GM) (else lim).
   function obstacleDist(x, y, z, t, lim) {
+    const k = gcell(x, z), L = k < 0 ? null : obGrid[k];
+    if (!L) return lim;
     const O = G.obst;
     let best = lim * lim;
-    for (let b = Math.floor((z - lim) / BZ); b <= Math.floor((z + lim) / BZ); b++) {
-      const L = obBuckets.get(b);
-      if (L) for (const i of L) {
-        const v = i / 3;
-        const d = dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i);
-        if (d < best) best = d;
-      }
+    for (const i of L) {
+      const v = i / 3;
+      const d = dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i);
+      if (d < best) best = d;
     }
     return Math.sqrt(best);
   }
 
-  // Sideways slope (dy/dx) of the surface near height yRef at (x, z).
-  function slopeX(x, yRef, z) {
-    const ok = (h) => h !== -Infinity && Math.abs(h - yRef) <= 1.5;
-    const a = floorAt(x - 0.5, z, yRef + 0.8), c = floorAt(x, z, yRef + 0.8), b = floorAt(x + 0.5, z, yRef + 0.8);
-    if (ok(a) && ok(b)) return b - a;
-    if (ok(c) && ok(b)) return (b - c) * 2;     // near the left edge: one-sided
-    if (ok(a) && ok(c)) return (c - a) * 2;     // near the right edge
-    return 0;
+  // An impact on a surface with unit normal n, while moving into it (vn = v.n < 0): the ball
+  // bounces back with restitution e and loses speed along the surface to friction (fitted on
+  // real landings: after = landT * before + landN * vn, for impacts of 0.5+ units/step).
+  function impact(s, nx, ny, nz, vn, e) {
+    const tx = s.vx - vn * nx, ty = s.vy - vn * ny, tz = s.vz - vn * nz, vt = Math.hypot(tx, ty, tz);
+    const a = 1 - (1 - P.landT) * Math.min(1, -vn / 0.5);
+    const r = vt > 1e-6 ? Math.max(0, (a * vt + P.landN * vn) / vt) : 0;
+    s.vx = tx * r - e * vn * nx; s.vy = ty * r - e * vn * ny; s.vz = tz * r - e * vn * nz;
+  }
+  // Push the ball out of any wall it overlaps; an impact if it was moving into it.
+  function walls(s) {
+    const k = gcell(s.x, s.z), L = k < 0 ? null : wallGrid[k];
+    if (!L) return false;
+    const r = P.rad;
+    let hitAny = false;
+    for (const i of L) {
+      const d2 = dist2(s.x, s.y, s.z, WALLS, i);
+      if (d2 >= r * r) continue;
+      const d = Math.sqrt(d2) || 1e-6, nx = (s.x - cq.x) / d, ny = (s.y - cq.y) / d, nz = (s.z - cq.z) / d;
+      s.x = cq.x + nx * r; s.y = cq.y + ny * r; s.z = cq.z + nz * r;
+      const vn = s.vx * nx + s.vy * ny + s.vz * nz;
+      if (vn < 0) { impact(s, nx, ny, nz, vn, P.wallE); hitAny = true; }
+    }
+    return hitAny;
   }
 
   // ---- ball simulation ---------------------------------------------------------------------
-  // s = {x, y, z, vx, vy, vz, u1, u2, air}; returns false when the ball dies.
+  // s = {x, y, z, vx, vy, vz (displacement per step), u1, u2 (keys held the last two steps),
+  //      air (steps airborne), ts (time scale), gx, gz (slopes of the surface it rolls on)}.
+  // Returns false when the ball dies.
   function simStep(s, u, t = 0) {
-    const p = P;
-    s.vx += (p.k1 + p.k1v * s.vz) * s.u1 + (p.k2 + p.k2v * s.vz) * s.u2 - p.drag * s.vx
-          - (s.air === 0 ? p.bank * slopeX(s.x, s.y - p.off, s.z) : 0);
+    const p = P, ts = s.ts, s2 = ts * ts;
+    // Velocity changes over the step (the fitted per-step model; velocities are displacements per step).
+    s.vx += s2 * (p.k1 * s.u1 + p.k2 * s.u2);
     s.u2 = s.u1; s.u1 = u;
-    s.x += s.vx; s.z += s.vz; s.vz += s.az || 0;
-    const yFree = s.y + s.vy - p.g;
-    // The ball can only move onto surfaces near where its current slope would take it (a
-    // ramp tilts up gradually); a raised block's top is out of reach, its sides are walls.
-    const h = floorAt(s.x, s.z, s.y + s.vy - p.off + p.up + p.upV * Math.max(0, s.vz));
-    if (h > -Infinity && h + p.off >= yFree - p.snap - 0.3 * s.vz) {
-      // rolling on the surface (or landing): vertical speed follows the surface's slope
-      const hb = floorAt(s.x, s.z - 1, h + 2);
-      const slope = hb === -Infinity ? -1 : Math.max(-3, Math.min(3, h - hb));
-      s.y = h + p.off; s.vy = slope * s.vz; s.air = 0; s.void = 0;
+    if (s.air === 0) {
+      // rolling: sideways friction and the pull down a banked surface; along the track the
+      // slope's pull (horizontal part, for a rolling ball) against a constant resistance
+      s.vx -= p.dg * ts * s.vx + p.bank * s2 * s.gx;
+      s.vz += s2 * (p.a0 - p.a1 * 2 * s.gz / (1 + s.gz * s.gz)) - p.a2 * ts * s.vz;
     } else {
-      s.vy -= p.g; s.y = yFree; s.air++;
+      s.vx -= p.dax * ts * s.vx;
+      s.vz += s2 * p.fz - p.da * ts * s.vz;
+    }
+    s.vy -= p.g * s2 + p.da * ts * s.vy;
+    // The move, in sub-steps of at most ~1 unit, so short ramps and thin obstacles aren't skipped.
+    const K = Math.min(6, Math.max(1, Math.ceil(Math.hypot(s.vx, s.vy, s.vz))));
+    const f = 1 / K;
+    let air = true;
+    for (let k = 0; k < K; k++) {
+      const xp = s.x, yp = s.y, zp = s.z;
+      s.x += f * s.vx; s.z += f * s.vz;
+      const yFree = s.y + f * s.vy;
+      const h = reachable(s.x, s.z, xp, zp, yp);
+      const N = Math.sqrt(1 + hit.gx * hit.gx + hit.gz * hit.gz), yc = h + p.rad * N;
+      if (h > -Infinity && yFree <= yc + 0.02) {
+        // on the surface. Landing, or running onto a differently sloped face (a ramp), is an
+        // impact: the velocity into the surface is lost, and with it some speed along it
+        // (friction; fitted on real landings). Then the ball rolls along the surface.
+        if (s.air > 0 || Math.abs(hit.gx - s.gx) + Math.abs(hit.gz - s.gz) > 0.05) {
+          const nx = -hit.gx / N, ny = 1 / N, nz = -hit.gz / N;
+          const vn = s.vx * nx + s.vy * ny + s.vz * nz;
+          if (vn < 0) impact(s, nx, ny, nz, vn, 0);
+        }
+        s.vy = (yc - yp) / f; s.y = yc; s.air = 0; s.gx = hit.gx; s.gz = hit.gz; s.hs = h; air = false;
+      } else {
+        s.y = yFree; air = true;
+        if (s.air === 0) s.air = 1;
+      }
+      // sides of platforms, walls of pipes: the ball bounces off them
+      if (walls(s)) s.wall = (s.wall || 0) + 1;
+      // obstacles, along the whole move
+      const n = Math.max(1, Math.ceil(Math.hypot(s.x - xp, s.y - yp, s.z - zp) / 0.5));
+      for (let q = 1; q <= n; q++) {
+        const w = q / n;
+        if (hitsObstacle(xp + w * (s.x - xp), yp + w * (s.y - yp), zp + w * (s.z - zp), p.rad, t + (k + w) * f)) { s.why = 2; return false; }
+      }
+    }
+    if (air) {
+      s.air++;
       // nothing at all below: falling off the side (a jump over a short gap lands in time)
       s.void = floorAt(s.x, s.z, s.y) === -Infinity ? (s.void || 0) + 1 : 0;
       if (s.air > p.airDead || s.void > p.voidDead) { s.why = 1; return false; }   // fell off
-    }
-    if (hitsObstacle(s.x, s.y, s.z, p.rad, t + 1)) { s.why = 2; return false; }
+    } else s.void = 0;
     return true;
   }
 
@@ -245,7 +343,7 @@
   function nearDanger(s, t) {
     const w = P.edgeW;
     for (const dx of [-w, w]) {
-      if (s.air === 0 && floorAt(s.x + dx, s.z, s.y + 1) < s.y - P.off - 3) return 1;
+      if (s.air === 0 && floorAt(s.x + dx, s.z, s.hs + 1) < s.hs - 3) return 1;
       if (hitsObstacle(s.x + dx, s.y, s.z, 0.5, t + 1)) return 1;
     }
     return 0;
@@ -255,7 +353,7 @@
   // `rate`: fraction of the remaining gap to close per step.
   function toward(s, xt, rate = 0.12) {
     const p = P;
-    const pend = (p.k1 + p.k1v * s.vz) * s.u1 + (p.k2 + p.k2v * s.vz) * s.u2 + (p.k2 + p.k2v * s.vz) * s.u1;
+    const s2 = s.ts * s.ts, pend = s2 * (p.k1 * s.u1 + p.k2 * s.u2 + p.k2 * s.u1);
     const want = Math.max(-0.9, Math.min(0.9, rate * (xt - s.x)));
     const err = want - (s.vx + pend);
     const dead = 0.02 + 0.004 * s.vz;
@@ -263,23 +361,24 @@
   }
 
   // Simulate a plan. plan(s, t) -> u.
-  // Returns [stepsSurvived, danger, keyPresses, firstU, alive, clearance]; clearance is the
-  // smallest gap (beyond the ball's radius) to an obstacle or a floor edge over the near future.
+  // Returns [stepsSurvived, danger, keyPresses, firstU, alive, clearance, airSteps, wallHits];
+  // clearance is the smallest gap (beyond the ball's radius) to an obstacle or a floor edge
+  // over the near future.
   function run(start, plan, H) {
     const s = Object.assign({}, start);
     let danger = 0, keys = 0, first = null, clear = P.clearCap, air = 0;
     for (let t = 0; t < H; t++) {
-      if (s.z > zMax - 2) return [H, danger, keys, first ?? 0, true, clear, air];   // past what we can see
+      if (s.z > zMax - 2) return [H, danger, keys, first ?? 0, true, clear, air, s.wall || 0];   // past what we can see
       const u = plan(s, t);
       if (first === null) first = u;
       if (u) keys++;
-      if (!simStep(s, u, t)) return [t, danger, keys, first, false, 0, air];
+      if (!simStep(s, u, t)) return [t, danger, keys, first, false, 0, air, s.wall || 0];
       danger += nearDanger(s, t) * (1 - t / H);
       if (s.air > 0 && t < P.clearSteps) air++;
       if (t < P.clearSteps) {
         clear = Math.min(clear, obstacleDist(s.x, s.y, s.z, t + 1, P.clearCap + P.rad) - P.rad);
         if (s.air === 0) {
-          const y = s.y - P.off;
+          const y = s.hs;
           for (const dx of [0.6, 1.0, 1.5]) {
             if (dx - 0.5 >= clear) break;
             if (floorAt(s.x - dx, s.z, y + 0.8) < y - 1.5 || floorAt(s.x + dx, s.z, y + 0.8) < y - 1.5) { clear = Math.min(clear, dx - 0.5); break; }
@@ -287,7 +386,7 @@
         }
       }
     }
-    return [H, danger, keys, first, true, clear, air];
+    return [H, danger, keys, first, true, clear, air, s.wall || 0];
   }
 
   // ---- the track ahead --------------------------------------------------------------------
@@ -327,32 +426,40 @@
 
   // ---- decision ----------------------------------------------------------------------------
   const hist = [];   // recent ball positions for velocity
-  // Recent forward acceleration (per step^2), from the last few positions.
-  const accel = () => {
-    const n = hist.length;
-    if (n < 5) return 0;
-    const a = ((hist[n - 1][2] - hist[n - 2][2]) - (hist[n - 4][2] - hist[n - 5][2])) / 3;
-    return Math.max(0, Math.min(0.05, a));
+  const readTs = () => {
+    const v = new Float32Array(window.gameInstance.Module.HEAPU8.buffer, P.tsAddr, 1)[0];
+    return v > 0.5 && v < 20 ? v : 3;
   };
   let u1 = 0, u2 = 0;
+  // Model state of the ball now (after sense()), from its last two positions and this frame's geometry.
+  function current() {
+    const b = hist[hist.length - 1], n = hist.length;
+    const v = n >= 2 ? [0, 1, 2].map(i => hist[n - 1][i] - hist[n - 2][i]) : [0, -1, 1];
+    buildMap(b);
+    const s = { x: b[0], y: b[1], z: b[2], vx: v[0], vy: v[1], vz: Math.max(v[2], 0.3), u1, u2, air: 1, ts: readTs(),
+                gx: 0, gz: -1, hs: b[1] - 0.7, void: 0 };
+    const h = floorAt(b[0], b[2], b[1]);
+    if (h > -Infinity) {
+      const N = Math.sqrt(1 + hit.gx * hit.gx + hit.gz * hit.gz);
+      if (b[1] - (h + P.rad * N) < 0.15) { s.air = 0; s.gx = hit.gx; s.gz = hit.gz; s.hs = h; }
+    }
+    return s;
+  }
+  // Take in this frame: ball position and obstacle motion.
+  function sense() { hist.push(B.ball()); if (hist.length > 6) hist.shift(); trackObstacles(); }
+  function commit(ui) { u2 = u1; u1 = ui; }
   B.ctl = {
     reset() { hist.length = 0; u1 = 0; u2 = 0; },
     // Call once per decision step, after the frame was rendered with geo.on = true.
     decide() {
-      const t0 = performance.now ? B.realNow() : 0;
-      const b = B.ball();
-      hist.push(b); if (hist.length > 6) hist.shift();
-      trackObstacles();
-      const n = hist.length;
-      const v = n >= 2 ? [0, 1, 2].map(i => hist[n - 1][i] - hist[n - 2][i]) : [0, -1, 1];
-      buildMap(b);
-      const start = { x: b[0], y: b[1], z: b[2], vx: v[0], vy: v[1], vz: Math.max(v[2], 0.5), az: accel(), u1, u2, air: 0 };
-      if (floorAt(b[0], b[2], b[1]) + P.off < b[1] - 1) start.air = 5;
+      const t0 = B.realNow();
+      sense();
+      const start = current(), b = [start.x, start.y, start.z];
       const H = P.horizon;
       let best = null, bestScore = -Infinity, nPlans = 0;
       const consider = (plan, tag) => {
         const r = run(start, plan, H); nPlans++;
-        const sc = r[0] * 10 - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5]) - P.airW * r[6];
+        const sc = r[0] * 10 - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5]) - P.airW * r[6] - P.wallW * Math.min(1, r[7]);
         if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan }; }
       };
       // hold still (no key), steer toward a lateral target, and two-stage target changes
@@ -372,30 +479,25 @@
       }
       const ui = best ? best.u : 0;
       this.lastPlan = best && best.plan; this.lastStart = start;
-      if (this.log) this.log.push([b[0], b[1], b[2], ui, slopeX(b[0], b[1] - P.off, b[2]), start.air > 0 ? 1 : 0]);
-      u2 = u1; u1 = ui;
+      commit(ui);
       this.last = { plans: nPlans, best: best && best.tag, surv: best && best.r[0], zAhead: zMax - b[2], ms: B.realNow() - t0 };
       return ui === -1 ? 1 : ui === 1 ? 2 : 0;   // index into [none, left, right]
     },
-    // Simulate the given key sequence (-1/0/1 per step) from the current state, using the
-    // geometry captured this frame. For validating the model against the real game.
+    // When something else drives: sense() after each frame, then commit(key) with the key it holds next.
+    sense, commit,
+    observe(ui) { sense(); commit(ui); },
+    // Simulate the key sequence us (-1/0/1 per step) from the current state (call after sense(),
+    // before commit()), using the geometry captured this frame. For validating the model.
     predict(us) {
-      const b = B.ball();
-      const n = hist.length;
-      const v = n >= 2 ? [0, 1, 2].map(i => hist[n - 1][i] - hist[n - 2][i]) : [0, -1, 1];
-      buildMap(b);
-      const s = { x: b[0], y: b[1], z: b[2], vx: v[0], vy: v[1], vz: v[2], az: accel(), u1, u2, air: 0 };
-      if (floorAt(b[0], b[2], b[1]) + P.off < b[1] - 1) s.air = 5;
-      const out = [];
+      const s = current(), out = [];
       for (let t = 0; t < us.length; t++) {
-        const u = us[t], alive = simStep(s, u, t);
-        out.push([s.x, s.y, s.z, alive ? 0 : s.why, s.air, floorAt(s.x, s.z, s.y + 1)]);
+        const alive = simStep(s, us[t], t);
+        out.push([s.x, s.y, s.z, alive ? 0 : s.why, s.air]);
         if (!alive) break;
       }
       return out;
     },
-    // Keep the velocity/key history in sync when something else is driving.
-    observe(ui) { const b = B.ball(); hist.push(b); if (hist.length > 6) hist.shift(); trackObstacles(); u2 = u1; u1 = ui; },
+    state() { const s = current(); return [s.air, s.gx, s.gz, s.ts, s.hs]; },
     // For the visual debugger: map layers, traced edges, obstacles and the best plan's path.
     debugView() {
       const b = B.ball();
@@ -408,11 +510,10 @@
       const obs = [];
       const O = G.obst;
       for (let i = 0; i + 8 < O.length; i += 9) obs.push([O[i], O[i + 2], O[i + 3], O[i + 5], O[i + 6], O[i + 8], vel[i / 3], vel[i / 3 + 2]]);
+      const L1 = new Float32Array(NX * NZ);
+      for (let k = 0; k < NX * NZ; k++) L1[k] = LH[k * NL + 1];
       return { x0, z0, NX, NZ, DX, DZ, L0: Array.from(L0), L1: Array.from(L1), ball: b,
                edgeL: Array.from(edgeL), edgeR: Array.from(edgeR), path, obs, last: this.last };
     },
-    // Sideways slope of the surface under the ball (dy/dx), from this frame's geometry.
-    slopeHere() { const b = B.ball(); buildMap(b); return slopeX(b[0], b[1] - P.off, b[2]); },
-    debugMap() { return { x0, z0, NX, NZ, DX, DZ, floor: Array.from(L0) }; },
   };
 })();
