@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 models/old/
 runs/old_*
+*.webm

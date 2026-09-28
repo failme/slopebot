@@ -105,9 +105,9 @@ Planner bot, headless, one game per level seed (score = the game's own counter):
 | 45 | 204, then fell off the track | before the "danger" search upgrade |
 | 42, 43, 44 (first attempts) | stuck at 257 / 161 / 156 | fell into a void where the game never ends the run; fixed by the free-fall rule |
 
-Replaying `runs/planner_seed43.json` in a fresh browser reproduces the game exactly and
-ends on the same score, which is the check that the recording is genuine:
-`python bot/play.py --replay runs/planner_seed43.json` prints the final score.
+Replaying a recording in a fresh browser reproduces the game exactly, so it is an
+independent check of the result: `python bot/play.py --replay runs/planner_seed43.json`
+prints the final score. Both recordings were checked this way and end on 301 and 300.
 
 It takes the planner roughly 1-2 s of CPU per move in the late game (the rollouts dominate),
 so a 300-point game takes ~2 hours of wall time to compute on a 4-core machine, but only
