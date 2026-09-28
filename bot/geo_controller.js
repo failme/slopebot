@@ -28,6 +28,10 @@
     edgeW: 1.2,               // lateral distance at which a missing floor / obstacle counts as "close"
     decal: -1e9,              // red geometry less than this above the floor is a marking, not an obstacle
     up: 0.4, upV: 0.35,       // how far above the ball's continued path a surface may be and still be rolled onto
+    clearSteps: 30,           // steps over which clearance to obstacles / edges is measured
+    clearCap: 1.5,            // clearance beyond this doesn't count
+    clearW: 25,               // score per unit of clearance (1 step of survival = 10)
+    airW: 3,                  // penalty per airborne step (leaving the surface is where predictions are worst)
   };
 
   // ---- height map --------------------------------------------------------------------------
@@ -184,11 +188,29 @@
     return false;
   }
 
+  // Distance from the ball centre (at time t) to the nearest obstacle within `lim` (else lim).
+  function obstacleDist(x, y, z, t, lim) {
+    const O = G.obst;
+    let best = lim * lim;
+    for (let b = Math.floor((z - lim) / BZ); b <= Math.floor((z + lim) / BZ); b++) {
+      const L = obBuckets.get(b);
+      if (L) for (const i of L) {
+        const v = i / 3;
+        const d = dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i);
+        if (d < best) best = d;
+      }
+    }
+    return Math.sqrt(best);
+  }
+
   // Sideways slope (dy/dx) of the surface near height yRef at (x, z).
   function slopeX(x, yRef, z) {
-    const a = floorAt(x - 0.5, z, yRef + 0.8), b = floorAt(x + 0.5, z, yRef + 0.8);
-    if (a === -Infinity || b === -Infinity || Math.abs(a - yRef) > 1.5 || Math.abs(b - yRef) > 1.5) return 0;
-    return (b - a) / 1.0;
+    const ok = (h) => h !== -Infinity && Math.abs(h - yRef) <= 1.5;
+    const a = floorAt(x - 0.5, z, yRef + 0.8), c = floorAt(x, z, yRef + 0.8), b = floorAt(x + 0.5, z, yRef + 0.8);
+    if (ok(a) && ok(b)) return b - a;
+    if (ok(c) && ok(b)) return (b - c) * 2;     // near the left edge: one-sided
+    if (ok(a) && ok(c)) return (c - a) * 2;     // near the right edge
+    return 0;
   }
 
   // ---- ball simulation ---------------------------------------------------------------------
@@ -229,28 +251,42 @@
   }
 
   // Controller that steers toward lateral target xt (accounting for the key delay).
-  function toward(s, xt) {
+  // `rate`: fraction of the remaining gap to close per step.
+  function toward(s, xt, rate = 0.12) {
     const p = P;
     const pend = (p.k1 + p.k1v * s.vz) * s.u1 + (p.k2 + p.k2v * s.vz) * s.u2 + (p.k2 + p.k2v * s.vz) * s.u1;
-    const want = Math.max(-0.9, Math.min(0.9, 0.12 * (xt - s.x)));
+    const want = Math.max(-0.9, Math.min(0.9, rate * (xt - s.x)));
     const err = want - (s.vx + pend);
     const dead = 0.02 + 0.004 * s.vz;
     return err > dead ? 1 : err < -dead ? -1 : 0;
   }
 
-  // Simulate a plan. plan(s, t) -> u. Returns [stepsSurvived, danger, keyPresses, firstU].
+  // Simulate a plan. plan(s, t) -> u.
+  // Returns [stepsSurvived, danger, keyPresses, firstU, alive, clearance]; clearance is the
+  // smallest gap (beyond the ball's radius) to an obstacle or a floor edge over the near future.
   function run(start, plan, H) {
     const s = Object.assign({}, start);
-    let danger = 0, keys = 0, first = null;
+    let danger = 0, keys = 0, first = null, clear = P.clearCap, air = 0;
     for (let t = 0; t < H; t++) {
-      if (s.z > zMax - 2) return [H, danger, keys, first ?? 0, true];   // past what we can see
+      if (s.z > zMax - 2) return [H, danger, keys, first ?? 0, true, clear, air];   // past what we can see
       const u = plan(s, t);
       if (first === null) first = u;
       if (u) keys++;
-      if (!simStep(s, u, t)) return [t, danger, keys, first, false];
+      if (!simStep(s, u, t)) return [t, danger, keys, first, false, 0, air];
       danger += nearDanger(s, t) * (1 - t / H);
+      if (s.air > 0 && t < P.clearSteps) air++;
+      if (t < P.clearSteps) {
+        clear = Math.min(clear, obstacleDist(s.x, s.y, s.z, t + 1, P.clearCap + P.rad) - P.rad);
+        if (s.air === 0) {
+          const y = s.y - P.off;
+          for (const dx of [0.6, 1.0, 1.5]) {
+            if (dx - 0.5 >= clear) break;
+            if (floorAt(s.x - dx, s.z, y + 0.8) < y - 1.5 || floorAt(s.x + dx, s.z, y + 0.8) < y - 1.5) { clear = Math.min(clear, dx - 0.5); break; }
+          }
+        }
+      }
     }
-    return [H, danger, keys, first, true];
+    return [H, danger, keys, first, true, clear, air];
   }
 
   // ---- the track ahead --------------------------------------------------------------------
@@ -315,7 +351,7 @@
       let best = null, bestScore = -Infinity, nPlans = 0;
       const consider = (plan, tag) => {
         const r = run(start, plan, H); nPlans++;
-        const sc = r[0] * 10 - r[1] * 2 - r[2] * 0.02;
+        const sc = r[0] * 10 - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5]) - P.airW * r[6];
         if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan }; }
       };
       // hold still (no key), steer toward a lateral target, and two-stage target changes
@@ -326,10 +362,12 @@
       // lanes that follow the track: a fraction f across its width, possibly changing lane
       traceTrack(b[0], b[2]);
       const F = [0, 0.15, 0.3, 0.5, 0.7, 0.85, 1];
-      for (const f of F) consider((s) => toward(s, laneX(s.z + 2 * s.vz, f, s.x)), 'lane' + f);
+      // pure pursuit: aim at the lane L steps ahead and close the gap over L steps
+      const pursue = (s, f, L) => toward(s, laneX(s.z + L * s.vz, f, s.x), 1 / L);
+      for (const f of F) for (const L of [3, 5, 8]) consider((s) => pursue(s, f, L), `lane${f}/${L}`);
       for (const f1 of F) for (const T1 of [6, 14, 24]) for (const f2 of F) {
         if (f1 === f2) continue;
-        consider((s, t) => toward(s, laneX(s.z + 2 * s.vz, t < T1 ? f1 : f2, s.x)), `lane${f1}>${f2}@${T1}`);
+        consider((s, t) => pursue(s, t < T1 ? f1 : f2, 5), `lane${f1}>${f2}@${T1}`);
       }
       const ui = best ? best.u : 0;
       this.lastPlan = best && best.plan; this.lastStart = start;

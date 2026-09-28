@@ -64,7 +64,56 @@ def render(v, actual, scale=6, zspan=160, ref=None):
     return im
 
 
+def frame_png(e):
+    import base64
+    w, h, px = e.js("""() => { const gl = __bot.gl, W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+      const p = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, p);
+      let s = ''; for (let i = 0; i < p.length; i += 8192) s += String.fromCharCode.apply(null, p.subarray(i, i + 8192));
+      return [W, H, btoa(s)]; }""")
+    return Image.fromarray(np.frombuffer(base64.b64decode(px), np.uint8).reshape(h, w, 4)[::-1, :, :3].copy())
+
+
+def crash_report(seed, out, before=(30, 15, 4)):
+    """Play until the crash, then replay and show map + game view shortly before it."""
+    e = open_game(seed); e.js("() => { __bot.norender = true; }")
+    a, t = 0, 0
+    while True:
+        a, dead, score, last = e.js(STEP_JS, [a, 1, False]); t += 1
+        if dead or t > 20000:
+            break
+    e.close()
+    death = t
+    steps = [max(0, death - b) for b in before]
+    e = open_game(seed)
+    a, t, views, frames, pos = 0, 0, {}, {}, []
+    while t < death + 2:
+        a, dead, score, last = e.js(STEP_JS, [a, 1, False])
+        pos.append(e.js("() => __bot.ball()"))
+        if t in steps:
+            views[t] = e.js("() => __bot.ctl.debugView()")
+            frames[t] = frame_png(e)
+        t += 1
+        if dead:
+            break
+    e.close()
+    panels = []
+    for k in sorted(views):
+        m = render(views[k], pos[k:k + 60])
+        f = frames[k].resize((m.width, int(frames[k].height * m.width / frames[k].width)))
+        p = Image.new("RGB", (m.width, m.height + f.height)); p.paste(f, (0, 0)); p.paste(m, (0, f.height))
+        panels.append(p)
+    W = sum(p.width for p in panels) + 10 * len(panels); H = max(p.height for p in panels)
+    sheet = Image.new("RGB", (W, H)); x = 0
+    for p in panels:
+        sheet.paste(p, (x, 0)); x += p.width + 10
+    sheet.save(out)
+    return death, score
+
+
 def main():
+    if sys.argv[1] == "crash":
+        print(crash_report(int(sys.argv[2]), sys.argv[3]))
+        return
     seed, steps = int(sys.argv[1]), [int(x) for x in sys.argv[2].split(",")]
     out = sys.argv[3]
     ref = None
