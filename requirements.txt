@@ -1,0 +1,4 @@
+playwright>=1.40
+torch>=2.0
+numpy
+pillow

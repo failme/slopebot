@@ -1,0 +1,6 @@
+game/
+data/
+logs/
+__pycache__/
+*.pyc
+models/old/
