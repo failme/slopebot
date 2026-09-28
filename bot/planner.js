@@ -33,7 +33,7 @@
   B.ballAt = function (f) { const i = this.ballIdx; return [(f[i] + f[i + 3]) / 2, (f[i + 1] + f[i + 4]) / 2, (f[i + 2] + f[i + 5]) / 2]; };
   B.ball = function () { return this.ballAt(F()); };
 
-  const RDT = 50;  // rollout timestep (ms); physics runs at a fixed 20ms step so this is exact enough
+  const RDT = 50;  // rollout timestep (ms), same as a real decision step
 
   // Bytes that the game sets to 1 the moment the ball is lost (crash or fall), found by
   // diffing memory across deaths on several levels.
@@ -44,19 +44,39 @@
     const H = window.gameInstance.Module.HEAP32, v = this.scoreAddrs.map(a => H[a >> 2]);
     return v[0] === v[1] ? v[0] : Math.max(...v.filter(x => x >= 0 && x < 1e6));
   };
-  B.isDead = function () { const H = window.gameInstance.Module.HEAPU8; return this.deadAddrs.some(a => H[a] !== 0); };
+  B.isDead = function () {
+    const H = window.gameInstance.Module.HEAPU8;
+    return this.deadAddrs.some(a => H[a] !== 0) || this.air.n >= AIR_DEAD;
+  };
+
+  // Free-fall tracking. Sometimes the ball falls off into a void where the game never
+  // declares it dead (it just falls forever), so ~2.5s of uninterrupted free fall counts as
+  // death too. Legit jumps last at most ~1.5s. In free fall y'' is ~-0.14 per 50ms step²,
+  // while rolling it is ~0 or much smaller.
+  const AIR_DEAD = 50;
+  B.air = { y1: null, y2: null, n: 0 };
+  B.trackAir = function () {
+    const y = this.ball()[1], a = this.air;
+    if (a.y1 !== null && a.y2 !== null) a.n = (y - 2 * a.y1 + a.y2 < -0.1) ? a.n + 1 : 0;
+    a.y2 = a.y1; a.y1 = y;
+  };
+  // One real (non-rollout) decision step has been taken.
+  B.stepped = function () { this.trackAir(); return this.isDead(); };
 
   // Roll `seq` ([[action, steps], ...], steps of RDT ms) forward without rendering.
   // Returns the number of steps survived and whether the ball died.
   B.rollout = function (seq) {
     let t = 0, dead = false;
     const wasNR = this.norender; this.norender = true;
+    const air0 = Object.assign({}, this.air);
     outer: for (const [a, n] of seq) {
       for (let k = 0; k < n; k++) {
         this.run(1, RDT, a); t++;
+        this.trackAir();
         if (this.isDead()) { dead = true; break outer; }
       }
     }
+    this.air = air0;  // the caller restores the game state; restore the tracker with it
     this.norender = wasNR;
     return { t, dead };
   };

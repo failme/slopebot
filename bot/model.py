@@ -13,11 +13,13 @@ class Policy(nn.Module):
 
     def __init__(self):
         super().__init__()
+        def block(i, o, k):
+            return [nn.Conv2d(i, o, k, stride=2, padding=k // 2, bias=False), nn.BatchNorm2d(o), nn.ReLU()]
         self.conv = nn.Sequential(
-            nn.Conv2d(4, 32, 5, stride=2, padding=2), nn.ReLU(),   # 48x64
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.ReLU(),  # 24x32
-            nn.Conv2d(64, 64, 3, stride=2, padding=1), nn.ReLU(),  # 12x16
-            nn.Conv2d(64, 64, 3, stride=2, padding=1), nn.ReLU(),  # 6x8
+            *block(4, 32, 5),   # 48x64
+            *block(32, 64, 3),  # 24x32
+            *block(64, 64, 3),  # 12x16
+            *block(64, 64, 3),  # 6x8
         )
         self.head = nn.Sequential(
             nn.Flatten(), nn.Linear(64 * (OBS_H // 16) * (OBS_W // 16), 256), nn.ReLU(),

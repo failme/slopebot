@@ -64,7 +64,7 @@ class Renderer:
         return self.env.js("""([a, ms, smooth]) => {
           __bot.norender = false;
           if (smooth) __bot.run(3, ms / 3, a); else __bot.run(1, ms, a);
-          return [__bot.ball(), __bot.isDead()];
+          return [__bot.ball(), __bot.stepped()];
         }""", [action, STEP_MS, smooth])
 
     def frames(self, n):
@@ -121,7 +121,7 @@ class Planner:
 
     def step(self, ai):
         """Take action index `ai` for one decision step. Returns (ball position, dead)."""
-        return self.env.js("([ai, a, ms]) => { __bot.commit(ai); __bot.run(1, ms, a); return [__bot.ball(), __bot.isDead()]; }",
+        return self.env.js("([ai, a, ms]) => { __bot.commit(ai); __bot.run(1, ms, a); return [__bot.ball(), __bot.stepped()]; }",
                            [ai, ACTIONS[ai], STEP_MS])
 
     def planned(self):
