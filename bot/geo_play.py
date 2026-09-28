@@ -46,14 +46,16 @@ def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
     if not watch:
         e.js("() => { __bot.norender = true; }")   # geometry is still captured
     a, t, t0, score, worst = 0, 0, time.time(), 0, 0.0
+    recent = []
     try:
-        chunk = 1 if watch else 20
+        chunk = 1 if watch else 1
         t_next = time.time()
         while t < max_steps:
             a, dead, score, last = e.js(STEP_JS, [a, chunk, watch])
             t += chunk
             if last:
                 worst = max(worst, last["ms"])
+                recent.append(last["surv"]); recent = recent[-40:]
             if watch:
                 t_next = max(t_next + 0.05, time.time() - 0.2)
                 time.sleep(max(0.0, t_next - time.time()))
@@ -61,6 +63,8 @@ def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
                 print(f"  seed {seed} step {t} score {score} (decision {last and round(last['ms'], 1)} ms, "
                       f"sees {last and round(last['zAhead'])} ahead)", flush=True)
             if dead:
+                if verbose:
+                    print(f"  seed {seed} died; planned survival over the last 40 steps: {recent}", flush=True)
                 break
     finally:
         e.close()

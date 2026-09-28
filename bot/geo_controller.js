@@ -14,10 +14,11 @@
 
   // ---- model constants (units per 50 ms step), see fit_model.py -----------------------------
   const P = B.ctlParams = {
-    k1: 0.0394, k1v: 0.0006,  // sideways velocity change from the key pressed one step ago (+ per unit of forward speed)
-    k2: 0.0413, k2v: 0.0024,  // ... and from the key pressed two steps ago
-    drag: 0.0302,             // sideways velocity decay per step
-    bank: 0.1075,             // sideways pull per unit of sideways surface slope (banked track)
+    // fitted on ~5800 grounded steps of the controller's own games (R^2 0.89)
+    k1: 0.0366, k1v: 0.0011,  // sideways velocity change from the key pressed one step ago (+ per unit of forward speed)
+    k2: 0.0404, k2v: 0.0016,  // ... and from the key pressed two steps ago
+    drag: 0.0393,             // sideways velocity decay per step
+    bank: 0.075,              // sideways pull per unit of sideways surface slope (banked track)
     g: 0.18,                  // gravity (per step^2)
     off: 0.7,                 // ball centre height above the surface
     snap: 1.0,                // how far below free fall the surface may be for the ball to stay on it (+0.3 per unit of speed)
@@ -371,6 +372,7 @@
       }
       const ui = best ? best.u : 0;
       this.lastPlan = best && best.plan; this.lastStart = start;
+      if (this.log) this.log.push([b[0], b[1], b[2], ui, slopeX(b[0], b[1] - P.off, b[2]), start.air > 0 ? 1 : 0]);
       u2 = u1; u1 = ui;
       this.last = { plans: nPlans, best: best && best.tag, surv: best && best.r[0], zAhead: zMax - b[2], ms: B.realNow() - t0 };
       return ui === -1 ? 1 : ui === 1 ? 2 : 0;   // index into [none, left, right]
