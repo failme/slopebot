@@ -43,11 +43,12 @@ def _playwright():
 
 
 class SlopeEnv:
-    def __init__(self, headless=True, width=640, height=480, seed=1, window=None, gpu=False):
+    def __init__(self, headless=True, width=640, height=480, seed=1, window=None, gpu=False, geo=False):
         """width/height: render resolution. window: (w, h) of the browser window (defaults to
         the render size). gpu: use the real GPU instead of SwiftShader (for watching)."""
         self.window = window or (width, height)
         self.gpu = gpu
+        self.geo = geo
         self.headless = headless
         self.seed = seed
         self.width, self.height = width, height
@@ -60,10 +61,12 @@ class SlopeEnv:
             args=[] if self.gpu else ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
         )
         self.page = self.browser.new_page(viewport={"width": self.window[0], "height": self.window[1]})
+        if self.geo:
+            self.page.add_init_script(path=os.path.join(ROOT, "bot", "geotap.js"))
         self.page.add_init_script(path=HOOKS)
         self.page.route("**/*", lambda r: r.continue_() if "127.0.0.1" in r.request.url else r.abort())
         # manual=1: time only advances when we step, so a run is reproducible for a given seed.
-        self.page.goto(f"http://127.0.0.1:{port}/index.html?manual=1&seed={self.seed}")
+        self.page.goto(f"http://127.0.0.1:{port}/index.html?manual=1&seed={self.seed}" + ("&geo=1" if self.geo else ""))
         self.page.wait_for_function("window.__bot && __bot.pending() > 0 && gameInstance.Module && gameInstance.Module.HEAPU8", timeout=120000, polling=50)
         return self
 

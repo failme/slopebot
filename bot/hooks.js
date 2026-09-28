@@ -126,6 +126,8 @@
           const orig = ctx[fn].bind(ctx);
           ctx[fn] = (...a) => { if (!window.__bot.nogl) orig(...a); };
         }
+        // Installed last so it sees every draw call, even when drawing is switched off.
+        if (params.get('geo') && window.__installGeoTap) window.__installGeoTap(ctx);
       }
       return ctx;
     }
