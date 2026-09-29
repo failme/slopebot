@@ -17,6 +17,7 @@ from env import ROOT, SlopeEnv
 
 CTL_JS = os.path.join(ROOT, "bot", "geo_controller.js")
 PLANNER_JS = os.path.join(ROOT, "bot", "planner.js")
+SAFETY_JSON = os.path.join(ROOT, "bot", "safety.json")
 
 # One decision step inside the page: capture this frame's geometry while advancing 50 ms
 # with the chosen key, then decide the next key.
@@ -47,6 +48,9 @@ def open_game(seed, watch=False, window=(960, 720), res=(320, 240), budget=None)
     e.js("() => { __bot.findBall(); __bot.ctl.reset(); }")
     if budget is not None:
         e.js("b => { __bot.ctlParams.budget = b; }", budget)
+    if os.path.exists(SAFETY_JSON):   # the learned plan-safety estimate (train_safety.py)
+        with open(SAFETY_JSON) as f:
+            e.js("w => { __bot.ctlSafety = w; }", json.load(f))
     if os.environ.get("GEO_PARAMS"):   # e.g. GEO_PARAMS='{"gamma": 1}' to try other settings
         e.js("p => { Object.assign(__bot.ctlParams, p); }", json.loads(os.environ["GEO_PARAMS"]))
     return e
