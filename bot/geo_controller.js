@@ -681,13 +681,20 @@
   // average over many games; this adapts it to the track and speed at hand.
   let lastState = null;
   const bias = { g: 0, a: 0 };
+  // Is the ball (really, now) off the ground? Same test as current().
+  function realAirNow() {
+    const b = hist[hist.length - 1], h = floorAt(b[0], b[2], b[1]);
+    if (h === -Infinity) return 1;
+    return b[1] - (h + P.rad * Math.sqrt(1 + hit.gx * hit.gx + hit.gz * hit.gz)) < 0.15 ? 0 : 1;
+  }
   function adaptBias() {
     if (!lastState || hist.length < 2) return;
     const s = Object.assign({}, lastState);
     simStep(s, 0, 0);   // (still this map: the new frame's is built later)
     const err = hist[hist.length - 1][2] - s.z;
     if (B.ctl.errLog) B.ctl.errLog.push([lastState.air, s.air, lastState.gx, lastState.gz, lastState.vx, lastState.ts,
-      hist[hist.length - 1][0] - s.x, err, lastState.u1, lastState.u2, lastState.vz, hist[hist.length - 1][1] - s.y, lastState.vy]);
+      hist[hist.length - 1][0] - s.x, err, lastState.u1, lastState.u2, lastState.vz, hist[hist.length - 1][1] - s.y, lastState.vy,
+      realAirNow(), s.vy]);
     if (Math.abs(err) > P.adaptClip) return;   // an impact or something else the model missed
     if (lastState.air === 0 && s.air === 0) bias.g += P.adaptRate * err;
     else if (lastState.air > 0 && s.air > 0) bias.a += P.adaptRate * err;
