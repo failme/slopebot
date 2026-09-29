@@ -684,6 +684,8 @@
     const s = Object.assign({}, lastState);
     simStep(s, 0, 0);   // (still this map: the new frame's is built later)
     const err = hist[hist.length - 1][2] - s.z;
+    if (B.ctl.errLog) B.ctl.errLog.push([lastState.air, s.air, lastState.gx, lastState.gz, lastState.vx, lastState.ts,
+      hist[hist.length - 1][0] - s.x, err]);
     if (Math.abs(err) > P.adaptClip) return;   // an impact or something else the model missed
     if (lastState.air === 0 && s.air === 0) bias.g += P.adaptRate * err;
     else if (lastState.air > 0 && s.air > 0) bias.a += P.adaptRate * err;
