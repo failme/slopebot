@@ -43,12 +43,13 @@ def _playwright():
 
 
 class SlopeEnv:
-    def __init__(self, headless=True, width=640, height=480, seed=1, window=None, gpu=False, geo=False):
+    def __init__(self, headless=True, width=640, height=480, seed=1, window=None, gpu=False, geo=False, race=False):
         """width/height: render resolution. window: (w, h) of the browser window (defaults to
         the render size). gpu: use the real GPU instead of SwiftShader (for watching)."""
         self.window = window or (width, height)
         self.gpu = gpu
         self.geo = geo
+        self.race = race   # race mode (bot/race.js): ghost ball + scoreboard
         self.headless = headless
         self.seed = seed
         self.width, self.height = width, height
@@ -68,12 +69,21 @@ class SlopeEnv:
             self.page = self.browser.new_page(no_viewport=True)
         if self.geo:
             self.page.add_init_script(path=os.path.join(ROOT, "bot", "geotap.js"))
+        if self.race:
+            self.page.add_init_script(path=os.path.join(ROOT, "bot", "race.js"))
         self.page.add_init_script(path=HOOKS)
         self.page.route("**/*", lambda r: r.continue_() if "127.0.0.1" in r.request.url else r.abort())
-        # manual=1: time only advances when we step, so a run is reproducible for a given seed.
-        self.page.goto(f"http://127.0.0.1:{port}/index.html?manual=1&seed={self.seed}" + ("&geo=1" if self.geo else ""))
-        self.page.wait_for_function("window.__bot && __bot.pending() > 0 && gameInstance.Module && gameInstance.Module.HEAPU8", timeout=120000, polling=50)
+        self.load(self.seed)
         return self
+
+    def load(self, seed):
+        """(Re)load the game with this seed, in the same window."""
+        self.seed = seed
+        port = self.httpd.server_address[1]
+        # manual=1: time only advances when we step, so a run is reproducible for a given seed.
+        self.page.goto(f"http://127.0.0.1:{port}/index.html?manual=1&seed={seed}" + ("&geo=1" if self.geo else "")
+                       + ("&race=1" if self.race else ""))
+        self.page.wait_for_function("window.__bot && __bot.pending() > 0 && gameInstance.Module && gameInstance.Module.HEAPU8", timeout=120000, polling=50)
 
     def set_res(self, w, h):
         """Fix the game's render resolution (independent of the window size)."""

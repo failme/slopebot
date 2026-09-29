@@ -83,11 +83,20 @@
   // No gamepads, ever (also saves a per-frame navigator query).
   try { navigator.getGamepads = () => []; } catch (e) {}
   let rafQ = [];
+  // Frame time when running on its own (not manual): 1/60 s per frame, or with __bot.realClock
+  // the real time since the last frame (for a human playing at any display refresh rate).
+  let lastReal = null;
+  const clockDt = () => {
+    if (!window.__bot.realClock) return 1000 / 60;
+    const n = realNow(), d = lastReal === null ? 1000 / 60 : Math.min(50, Math.max(0, n - lastReal));
+    lastReal = n;
+    return d;
+  };
   let manual = !!params.get('manual');
   const realRaf = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = (cb) => {
     rafQ.push(cb);
-    if (!manual) realRaf(() => { if (!manual) window.__bot.step(1000 / 60); });
+    if (!manual) realRaf(() => { if (!manual) window.__bot.step(clockDt()); });
     return rafQ.length;
   };
   window.cancelAnimationFrame = () => {};
@@ -135,6 +144,7 @@
         }
         // Installed last so it sees every draw call, even when drawing is switched off.
         if (params.get('geo') && window.__installGeoTap) window.__installGeoTap(ctx);
+        if (params.get('race') && window.__installRace) window.__installRace(ctx);
       }
       return ctx;
     }
@@ -146,7 +156,8 @@
     nogl: false,
     hideUI: false,
     buf: null,
-    setManual(m) { manual = m; if (!m) this.step(1000 / 60); },
+    realClock: false,
+    setManual(m) { manual = m; if (!m) this.step(clockDt()); },
     step(dt) {
       vt += dt;
       fireTimers();

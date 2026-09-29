@@ -75,6 +75,22 @@ python bot/geo_play.py --seeds 1-8           # headless, faster than real time
 ./bot/geo_bench.sh /tmp/bench 1 24           # seeds 1..24, 4 games in parallel
 ```
 
+### Race the bot
+
+```bash
+python bot/race.py              # a random level
+python bot/race.py --seed 7
+```
+
+You play in the window (arrow keys; click it once if the keys don't respond) while the bot
+plays the same level at the same time in a hidden copy of the game. Its ball is drawn in your
+game as a blue ghost ball at its real position on the track, so you see it pull ahead or fall
+behind; when it's out of sight the scoreboard (`PLAYER: X   BOT: X`, replacing the game's own
+score) says how far ahead or behind it is. When you crash the race goes on until the bot is
+out too; Enter starts a new race on a new level, Esc quits. (`bot/race.js` draws the ghost:
+it re-draws the game's own ball mesh at the bot's position with a blue copy of its texture.
+The same seed always builds the same track, however the two games are played.)
+
 What it reads each step:
 
 * the ball's position and the game's time scale, from game memory (`planner.js` finds the
@@ -152,6 +168,7 @@ would need far more data (or a different target) than this machine produces
 | `bot/collect.py`, `bot/train.py`, `bot/model.py` | CNN imitation-learning pipeline |
 | `bot/geotap.js` | captures the track / obstacle triangles of every frame from WebGL |
 | `bot/geo_controller.js` | the real-time bot: map, ball model, planner |
+| `bot/race.py`, `bot/race.js` | race the bot: play alongside it, its ball shown as a blue ghost |
 | `bot/geo_play.py` | runs the real-time bot (headless, `--watch`, `--out` to save a game for `play.py --replay`) |
 | `bot/geo_bench.sh` | benchmark over a range of seeds |
 | `bot/geo_eval.py` | model accuracy on a replayed game; `death` mode explains why a game ended |
