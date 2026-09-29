@@ -114,6 +114,8 @@ def main():
     Xva, yva = matrix(va)
     mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-6
     print(f"{len(tr)} training plans ({ytr.mean():.0%} really survive), {len(va)} validation plans ({yva.mean():.0%})")
+    if not va:   # no validation seeds: train on everything
+        va, Xva, yva = tr[:1000], Xtr[:1000], ytr[:1000]
     print("model says survives (surv 60) -> really survives:", f"{yva[Xva[:, 0] >= 60].mean():.0%}",
           " model says dies ->", f"{yva[Xva[:, 0] < 60].mean():.0%}")
     for h in (0, a.hidden):
