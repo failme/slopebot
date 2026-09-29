@@ -35,6 +35,7 @@
     minPlans: 24,             // ... but at least this many plans are always tried
     refine: false,            // local search around the best plan when it is in trouble
     safetyW: 50,              // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
+    stick: 0,                 // see simStep
     kExp: -0.7, tsRef: 3.25,  // steering acceleration ~ ts^(2 + kExp) (fitted to one-step errors)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
@@ -499,7 +500,9 @@
       const yFree = s.y + f * s.vy;
       const h = reachable(s.x, s.z, xp, zp, yp);
       const N = Math.sqrt(1 + hit.gx * hit.gx + hit.gz * hit.gz), yc = h + p.rad * N;
-      if (h > -Infinity && yFree <= yc + 0.02) {
+      // (a rolling ball stays on a surface that falls away by up to `stick` per step: the real
+      // one follows crests that a free ballistic ball would fly over)
+      if (h > -Infinity && yFree <= yc + 0.02 + (s.air === 0 ? p.stick * f : 0)) {
         // on the surface. Landing, or running onto a differently sloped face (a ramp), is an
         // impact: the velocity into the surface is lost, and with it some speed along it
         // (friction; fitted on real landings). Then the ball rolls along the surface.
