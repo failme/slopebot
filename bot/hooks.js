@@ -58,6 +58,13 @@
   // Optional fixed render resolution: the canvas drawing buffer stays at fixedRes while CSS
   // stretches it over the window (index.html would otherwise resize it to the window).
   let fixedRes = null;
+  // Stretch the canvas over the whole window (and nothing else takes space or scrolls).
+  const fillWindow = (c) => {
+    c.style.cssText += ';position:fixed;left:0;top:0;width:100vw;height:100vh;margin:0;object-fit:contain;background:#000';
+    document.documentElement.style.overflow = 'hidden';
+    document.documentElement.style.background = '#000';
+    if (document.body) { document.body.style.margin = '0'; document.body.style.overflow = 'hidden'; }
+  };
   const rSI = window.setInterval.bind(window);
   window.setInterval = (f, ms, ...r) => {
     if (typeof f === 'function' && /innerWidth/.test(String(f))) {
@@ -68,7 +75,7 @@
         if (!c) return;
         if (c.width !== fixedRes[0]) c.width = fixedRes[0];
         if (c.height !== fixedRes[1]) c.height = fixedRes[1];
-        c.style.width = '100vw'; c.style.height = '100vh';
+        fillWindow(c);
       };
     }
     return rSI(f, ms, ...r);
@@ -176,7 +183,7 @@
     setRes(w, h) {
       fixedRes = w ? [w, h] : null;
       const c = document.getElementById('#canvas');
-      if (c && fixedRes) { c.width = w; c.height = h; c.style.width = '100vw'; c.style.height = '100vh'; }
+      if (c && fixedRes) { c.width = w; c.height = h; fillWindow(c); }
     },
     netlog,
     // Save/restore the whole emscripten heap together with virtual time.

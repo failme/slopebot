@@ -56,11 +56,16 @@ class SlopeEnv:
     def open(self):
         self.httpd = serve()
         port = self.httpd.server_address[1]
-        self.browser = _playwright().chromium.launch(
-            headless=self.headless,
-            args=[] if self.gpu else ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
-        )
-        self.page = self.browser.new_page(viewport={"width": self.window[0], "height": self.window[1]})
+        args = [] if self.gpu else ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"]
+        if not self.headless:
+            args.append(f"--window-size={self.window[0]},{self.window[1]}")
+        self.browser = _playwright().chromium.launch(headless=self.headless, args=args)
+        if self.headless:
+            self.page = self.browser.new_page(viewport={"width": self.window[0], "height": self.window[1]})
+        else:
+            # a visible window: the page follows the window's real size, so it can be resized
+            # and the game (stretched to the window) is never cropped
+            self.page = self.browser.new_page(no_viewport=True)
         if self.geo:
             self.page.add_init_script(path=os.path.join(ROOT, "bot", "geotap.js"))
         self.page.add_init_script(path=HOOKS)
@@ -79,6 +84,23 @@ class SlopeEnv:
         # The menu layout depends on the render resolution, so press Play at 640x480
         # (in a 640x480 window) and switch to the requested resolution afterwards.
         vp = self.page.viewport_size
+        if vp is None:
+            # Visible, resizable window: the game renders at the window's own size (as the
+            # original page does), so resizing the window re-lays it out instead of cropping.
+            # Play is pressed with the window briefly at 640x480, where its position is known.
+            cdp = self.page.context.new_cdp_session(self.page)
+            win = cdp.send("Browser.getWindowForTarget")["windowId"]
+            bounds = cdp.send("Browser.getWindowBounds", {"windowId": win})["bounds"]
+            dw, dh = self.js("() => [outerWidth - innerWidth, outerHeight - innerHeight]")
+            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"width": 640 + dw, "height": 480 + dh}})
+            self.set_res(0, 0)
+            self.frames(600)
+            self.page.wait_for_function("document.getElementById('#canvas').width === 640", timeout=10000)
+            self.page.mouse.click(320, 282)
+            self.frames(10)
+            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"width": bounds["width"], "height": bounds["height"]}})
+            self.frames(390)
+            return
         self.page.set_viewport_size({"width": 640, "height": 480})
         self.set_res(640, 480)
         self.frames(600)
