@@ -3,8 +3,10 @@ every plan the controller considers, play each plan's keys in the real game (sav
 and compare with the model's verdicts and ranking.
 
     python bot/geo_plans.py 17 --before-death 30,60,90,130
+    python bot/geo_plans.py 1-8 --params '{"robustK": 20}'   # another decision rule at the same states
 """
 import argparse
+import json
 import os
 import sys
 
@@ -37,24 +39,37 @@ JUDGE_JS = """([H]) => {
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("seed", type=int)
+    ap.add_argument("seeds", help="e.g. 3 or 1-8")
     ap.add_argument("--before-death", default="30,60,90,130")
+    ap.add_argument("--params", default=None, help="JSON: controller parameters for the decision at the checkpoint "
+                    "(the game up to there is the bot's own, with its default parameters)")
     a = ap.parse_args()
-    keys, score = record(a.seed)
+    params = json.loads(a.params) if a.params else {}
+    lo, _, hi = a.seeds.partition("-")
+    tally = [0, 0, 0]   # checkpoints where some plan really survives / the chosen one does / all
+    for seed in range(int(lo), int(hi or lo) + 1):
+        tally = [x + y for x, y in zip(tally, run_seed(seed, a.before_death, params))]
+    print(f"TOTAL: {tally[2]} checkpoints; some plan really survives at {tally[0]}; "
+          f"the chosen plan really survives at {tally[1]}", flush=True)
+
+
+def run_seed(seed, before_death, params):
+    keys, score = record(seed)
     n = len(keys)
-    print(f"seed {a.seed}: game ends at step {n} (score {score})", flush=True)
-    for b in [int(x) for x in a.before_death.split(",")]:
+    print(f"seed {seed}: game ends at step {n} (score {score})", flush=True)
+    tally = [0, 0, 0]
+    for b in [int(x) for x in before_death.split(",")]:
         T = n - b
         if T < 5:
             continue
-        e = open_game(a.seed, budget=1e9)
+        e = open_game(seed, budget=1e9)
         e.js("() => { __bot.norender = true; }")
         try:
             # replay the bot's own decisions (deterministic) up to step T, collecting the plans there
             act = 0
             for t in range(T + 1):
                 if t == T:
-                    e.js("() => { __bot.ctl.collect = []; }")
+                    e.js("p => { __bot.ctl.collect = []; Object.assign(__bot.ctlParams, p); }", params)
                 act, dead, sc, last = e.js(STEP_JS, [act, 1, False])
             chosen = last["best"]
             rows = e.js(JUDGE_JS, [H])
@@ -68,6 +83,12 @@ def main():
               f"chosen {chosen} (model {ch and ch[1]}, really {'survives' if ch and ch[3] else 'dies'}); "
               f"best-scored plan that really survives: {'rank ' + str(rank + 1) if rank is not None else 'none'}"
               + (f" ({ranked[rank][0]}, model survival {ranked[rank][1]})" if rank is not None else ""), flush=True)
+        tally[2] += 1
+        if ok:
+            tally[0] += 1
+            if ch and ch[3]:
+                tally[1] += 1
+    return tally
 
 
 if __name__ == "__main__":
