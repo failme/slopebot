@@ -430,6 +430,7 @@
     return false;
   }
 
+  let keyLog = null;   // when set, run() records the keys the plan presses (for analysis tools)
   // Extra distance to keep from red obstacles when planning, growing with how far ahead the
   // prediction is (its error grows): a near miss in the model is a hit in reality too often.
   let planning = false;
@@ -534,6 +535,7 @@
       const u = plan(s, t);
       if (first === null) first = u;
       if (u) keys++;
+      if (keyLog) keyLog.push(u);
       // Dying later than the near future doesn't erase how close the near future passes to
       // things. A fall counts from when the ball left the ground (it is only noticed later).
       if (!simStep(s, u, t)) {
@@ -657,9 +659,11 @@
         // real time: the plans are tried in order of importance; stop when time is up (but
         // always try the basic ones)
         if (nPlans >= P.minPlans && B.realNow() - t0 > P.budget) return;
+        if (this.collect) keyLog = [];
         const r = run(start, plan, H); nPlans++;
         const sc = survScore(r[0]) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
           - P.airW * r[6] - P.wallW * Math.min(1, r[7]) + (tag === prevTag || tag === 'prev' ? P.stickW : 0);
+        if (this.collect) { this.collect.push({ tag, surv: r[0], sc, keys: keyLog }); keyLog = null; }
         if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan, sc }; }
         if (top.length < P.robustK || sc > top[top.length - 1].sc) {
           top.push({ u: r[3], r, tag, plan, sc });
