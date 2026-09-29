@@ -6,6 +6,7 @@ the controller's model (ctl.predict) and compares with where the ball really wen
 
     python bot/geo_eval.py 6 out.json        # seed 6, saves per-step predictions
     python bot/geo_eval.py 6 new.json out.json   # same keys as in out.json (after a model change)
+    python bot/geo_eval.py death 3 9          # why did the controller die on seeds 3 and 9?
 """
 import json
 import os
@@ -67,7 +68,47 @@ def replay(seed, keys):
     return out
 
 
+def death_report(seed, look=60):
+    """Why did the controller die on this seed? For the steps before the death, simulate the
+    keys it really pressed: if the model foresaw the death, planning failed (or there was no
+    way out); if not, the model was wrong, and the divergence shows where."""
+    keys, score = record(seed)
+    death = len(keys)
+    e = open_game(seed)
+    e.js("() => { __bot.norender = true; }")
+    try:
+        rows = e.js(REPLAY_JS.replace("const out = [];", f"const out = []; const T0 = {max(0, death - look - 1)};")
+                    .replace("const pred = fut.length ?", "const pred = (t >= T0 && fut.length) ?"), [keys, look + 2])
+    finally:
+        e.close()
+    B = [r["b"] for r in rows]
+    n = len(rows)
+    print(f"seed {seed}: died at step {n} (score {score})")
+    foresaw = None
+    for t in range(max(0, n - look - 1), n - 1):
+        p = rows[t]["pred"]
+        if not p:
+            continue
+        end = t + len(p)
+        why = p[-1][3]
+        if why and end >= n - 3 and foresaw is None:
+            foresaw = (t, why)
+        if (n - 1 - t) % 5 == 0 or t >= n - 4:
+            h = min(len(p), n - 1 - t)
+            err = [round(p[h - 1][i] - B[t + h][i], 2) for i in range(3)] if h > 0 else None
+            print(f"  t-{n - 1 - t:2d}: model with real keys: {'dies ' + ['', 'falling', 'obstacle'][why] + f' at +{len(p)}' if why else 'survives'}"
+                  f"; error at death {err}; real air {rows[t]['st'][0]}")
+    if foresaw:
+        print(f"  => the model foresaw it {n - 1 - foresaw[0]} steps ahead ({['', 'falling', 'obstacle'][foresaw[1]]}): planning / no escape")
+    else:
+        print("  => the model did not foresee it: model error")
+
+
 def main():
+    if sys.argv[1] == "death":
+        for s in sys.argv[2:]:
+            death_report(int(s))
+        return
     seed, path = int(sys.argv[1]), sys.argv[2]
     if len(sys.argv) > 3:   # reuse the keys of an earlier recording (to test model changes)
         with open(sys.argv[3]) as f:

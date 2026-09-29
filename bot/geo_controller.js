@@ -22,20 +22,21 @@
     bank: 0.0069,             // sideways pull per unit of sideways surface slope (x ts^2)
     a0: -0.00439, a1: 0.00655, a2: 0.0005,  // along-track acceleration on the ground (see simStep)
     g: 0.01834,               // gravity (x ts^2)
-    landT: 0.92, landN: 0.51, // impact: speed along the surface after = landT * before + landN * (normal speed, < 0)
-    wallE: 0.3,               // restitution when bouncing off a wall
     da: 0.00086, dax: 0.00127, fz: 0.00152,  // air drag, sideways air drag (x ts), forward push in the air (x ts^2)
     rad: 0.495,               // ball radius
-    tsAddr: 26580708,         // Time.timeScale (float) in the Emscripten heap
+    tsAddrs: [26580708, 22398436, 31244388],  // copies of Time.timeScale (float) in the Emscripten heap
     reach: 0.3,               // a surface whose plane passes this far above the ball's last contact is a wall/block top, not a ramp
     airDead: 40,              // steps airborne that count as falling off
     voidDead: 12,             // steps with no surface anywhere below that count as falling off
     horizon: 60,              // simulated steps per plan
+    wallE: 0.3,               // restitution when bouncing off a wall
     edgeW: 1.2,               // lateral distance at which a missing floor / obstacle counts as "close"
     decal: -1e9,              // red geometry less than this above the floor is a marking, not an obstacle
     clearSteps: 30,           // steps over which clearance to obstacles / edges is measured
     clearCap: 1.5,            // clearance beyond this doesn't count
-    clearW: 25,               // score per unit of clearance (1 step of survival = 10)
+    survW: 200, gamma: 0.95,  // survival score: survW * (1 - gamma^steps), so distant (less certain) deaths weigh less
+    clearW: 25,               // score per unit of clearance
+    stickW: 10,               // bonus for continuing the previous plan (avoids dithering between equal options)
     airW: 3,                  // penalty per airborne step (leaving the surface is where predictions are worst)
     wallW: 150,               // penalty for bouncing off a wall (predictions after that are poor)
   };
@@ -53,7 +54,7 @@
     x0 = bx - NX * DX / 2; z0 = bz - 8;
     LH.fill(-Infinity); L0.fill(-Infinity);
     zMax = -Infinity;
-    WALLS = []; wallGrid = new Array(GNX * GNZ);
+    TRI = []; TRN = []; triGrid = new Array(GNX * GNZ);
   }
   function addSurface(k, y, gx, gz) {
     const b = k * NL;
@@ -73,10 +74,12 @@
     const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
     const ny = uz * vx - ux * vz, nx = uy * vz - uz * vy, nz = ux * vy - uy * vx;
     const nl = Math.hypot(nx, ny, nz) || 1;
+    // walls can be touched by the ball from any side (see contacts()); floors are in the height map
+    const w = TRI.length;
+    TRI.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+    TRN.push(nx / nl, ny / nl, nz / nl);
     if (Math.abs(ny) / nl < 0.3) {                   // walls/sides: not something to roll on
-      const w = WALLS.length;
-      WALLS.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-      gridAdd(wallGrid, w, Math.min(ax, bx, cx), Math.max(ax, bx, cx), Math.min(az, bz, cz), Math.max(az, bz, cz));
+      gridAdd(triGrid, w, Math.min(ax, bx, cx), Math.max(ax, bx, cx), Math.min(az, bz, cz), Math.max(az, bz, cz), 0.6);
       return;
     }
     const gx = -nx / ny, gz = -nz / ny;              // plane slopes dy/dx, dy/dz
@@ -139,42 +142,130 @@
   // triangles in a coarse x/z grid over the map: each cell lists the triangles within GM of it
   // (over the whole horizon, for moving obstacles), so a query only looks at one cell.
   const GX = 1, GZ = 2, GNX = NX * DX / GX, GNZ = NZ * DZ / GZ, GM = 2.1;
-  let obGrid = [], wallGrid = [], WALLS = [];
+  let obGrid = [], triGrid = [], TRI = [], TRN = [];
   const gcell = (x, z) => {
     const i = Math.floor((x - x0) / GX), j = Math.floor((z - z0) / GZ);
     return (i < 0 || j < 0 || i >= GNX || j >= GNZ) ? -1 : j * GNX + i;
   };
-  function gridAdd(grid, idx, xlo, xhi, zlo, zhi) {
-    const i0 = Math.max(0, Math.floor((xlo - GM - x0) / GX)), i1 = Math.min(GNX - 1, Math.floor((xhi + GM - x0) / GX));
-    const j0 = Math.max(0, Math.floor((zlo - GM - z0) / GZ)), j1 = Math.min(GNZ - 1, Math.floor((zhi + GM - z0) / GZ));
+  function gridAdd(grid, idx, xlo, xhi, zlo, zhi, m = GM) {
+    const i0 = Math.max(0, Math.floor((xlo - m - x0) / GX)), i1 = Math.min(GNX - 1, Math.floor((xhi + m - x0) / GX));
+    const j0 = Math.max(0, Math.floor((zlo - m - z0) / GZ)), j1 = Math.min(GNZ - 1, Math.floor((zhi + m - z0) / GZ));
     for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const k = j * GNX + i;
       (grid[k] || (grid[k] = [])).push(idx);
     }
   }
-  // Obstacle motion: match every red triangle to the same-shaped triangle nearest to it in the
-  // previous frame; the offset is its velocity per step (some red blocks slide back and forth).
-  let prevShapes = new Map(), vel = new Float32Array(0);
-  const shapeKey = (O, i) => [O[i + 3] - O[i], O[i + 4] - O[i + 1], O[i + 5] - O[i + 2], O[i + 6] - O[i], O[i + 7] - O[i + 1], O[i + 8] - O[i + 2]]
-    .map(v => Math.round(v * 20)).join(',');
+  // Obstacle motion. Red geometry comes as rigid objects (triangles sharing vertices), which
+  // are followed from frame to frame. Movers (pistons, sliders) go back and forth at constant
+  // speed between two turning points; the turning points are learned while an object is in
+  // view, and its motion is predicted as that ping-pong.
+  const OH = 64;                       // offset tables cover this many steps (>= horizon + 1)
+  let triObj = new Int32Array(0);      // red triangle -> object this frame
+  let objOff = [];                     // object -> null (static) or Float32Array(OH * 3) of offsets
+  let objExt = [];                     // object -> [min dx, max dx, min dz, max dz] of its offsets
+  let tracks = [];                     // followed objects
+  const ranges = [];                   // turning-point distances seen so far (default for new movers)
   function trackObstacles() {
-    const O = G.obst, n = O.length / 9, shapes = new Map();
-    vel = new Float32Array(n * 3);
-    for (let t = 0; t < n; t++) {
-      const i = t * 9, key = shapeKey(O, i);
-      const cx = (O[i] + O[i + 3] + O[i + 6]) / 3, cy = (O[i + 1] + O[i + 4] + O[i + 7]) / 3, cz = (O[i + 2] + O[i + 5] + O[i + 8]) / 3;
-      if (!shapes.has(key)) shapes.set(key, []);
-      shapes.get(key).push(cx, cy, cz);
-      const prev = prevShapes.get(key);
-      if (!prev) continue;
-      let best = 0.8 * 0.8, bx = 0, by = 0, bz = 0;
-      for (let q = 0; q < prev.length; q += 3) {
-        const dx = cx - prev[q], dy = cy - prev[q + 1], dz = cz - prev[q + 2], d = dx * dx + dy * dy + dz * dz;
-        if (d < best) { best = d; bx = dx; by = dy; bz = dz; }
-      }
-      vel[t * 3] = bx; vel[t * 3 + 1] = by; vel[t * 3 + 2] = bz;
+    const O = G.obst, n = O.length / 9;
+    const par = new Int32Array(n);
+    for (let i = 0; i < n; i++) par[i] = i;
+    const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    const vk = new Map();
+    for (let t = 0; t < n; t++) for (let v = 0; v < 3; v++) {
+      const i = t * 9 + v * 3, key = Math.round(O[i] * 1000) + ',' + Math.round(O[i + 1] * 1000) + ',' + Math.round(O[i + 2] * 1000);
+      const o = vk.get(key);
+      if (o === undefined) vk.set(key, t); else { const a = find(t), b = find(o); if (a !== b) par[a] = b; }
     }
-    prevShapes = shapes;
+    const idx = new Map(), objs = [];
+    triObj = new Int32Array(n);
+    for (let t = 0; t < n; t++) {
+      const r = find(t);
+      let k = idx.get(r);
+      if (k === undefined) { k = objs.length; idx.set(r, k); objs.push({ c: [0, 0, 0], lo: [1e9, 1e9, 1e9], hi: [-1e9, -1e9, -1e9], n: 0 }); }
+      triObj[t] = k;
+      const ob = objs[k];
+      for (let v = 0; v < 3; v++) for (let a = 0; a < 3; a++) {
+        const x = O[t * 9 + v * 3 + a];
+        ob.c[a] += x; if (x < ob.lo[a]) ob.lo[a] = x; if (x > ob.hi[a]) ob.hi[a] = x;
+      }
+      ob.n++;
+    }
+    for (const ob of objs) {
+      for (let a = 0; a < 3; a++) ob.c[a] /= ob.n * 3;
+      ob.sig = ob.n + ':' + ob.lo.map((l, a) => Math.round((ob.hi[a] - l) * 10)).join(',');
+    }
+    // match to the followed objects: same shape, nearest to where it was expected to be
+    for (const tr of tracks) tr.used = false;
+    for (const ob of objs) {
+      let best = null, bd = 1.5 * 1.5;
+      for (const tr of tracks) {
+        if (tr.used || tr.sig !== ob.sig) continue;
+        let d = 0;
+        for (let a = 0; a < 3; a++) d += (ob.c[a] - tr.pos[a] - tr.vel[a]) ** 2;
+        if (d < bd) { bd = d; best = tr; }
+      }
+      if (!best) {
+        best = { sig: ob.sig, pos: ob.c.slice(), vel: [0, 0, 0], pmin: ob.c.slice(), pmax: ob.c.slice(),
+                 turnLo: [false, false, false], turnHi: [false, false, false], speed: [0, 0, 0], dir: [0, 0, 0], age: 0 };
+        tracks.push(best);
+      } else {
+        for (let a = 0; a < 3; a++) {
+          const v = ob.c[a] - best.pos[a], sp = Math.max(best.speed[a] * 0.9, Math.abs(v));
+          // a turn: clearly moving the other way from the last clear motion
+          if (Math.abs(v) > 0.5 * sp && sp > 0.02) {
+            const dir = Math.sign(v), last = best.dir[a];
+            if (last > 0 && dir < 0 && !best.turnHi[a]) { best.turnHi[a] = true; if (best.turnLo[a]) ranges.push(best.pmax[a] - best.pmin[a]); }
+            if (last < 0 && dir > 0 && !best.turnLo[a]) { best.turnLo[a] = true; if (best.turnHi[a]) ranges.push(best.pmax[a] - best.pmin[a]); }
+            best.dir[a] = dir;
+          }
+          best.vel[a] = v; best.speed[a] = sp;
+          best.pmin[a] = Math.min(best.pmin[a], ob.c[a]); best.pmax[a] = Math.max(best.pmax[a], ob.c[a]);
+        }
+        best.pos = ob.c.slice();
+      }
+      best.used = true; best.age = 0; ob.track = best;
+    }
+    tracks = tracks.filter(tr => tr.used || ++tr.age < 5);
+    if (ranges.length > 50) ranges.splice(0, ranges.length - 50);
+    // predicted offsets over the horizon
+    const R = ranges.length ? ranges.slice().sort((x, y) => x - y)[ranges.length >> 1] : 20;
+    objOff = objs.map(ob => {
+      const tr = ob.track;
+      if (!tr.speed.some(v => v > 0.02)) return null;
+      const off = new Float32Array(OH * 3);
+      for (let a = 0; a < 3; a++) {
+        // constant speed, in the direction it was last clearly moving (at a turning point the
+        // measured displacement is partial or zero)
+        if (tr.speed[a] <= 0.02 || !tr.dir[a]) continue;
+        let v = tr.dir[a] * tr.speed[a];
+        let lo = tr.turnLo[a] ? tr.pmin[a] : -Infinity, hi = tr.turnHi[a] ? tr.pmax[a] : Infinity;
+        if (lo === -Infinity && hi < Infinity) lo = hi - R;
+        if (hi === Infinity && lo > -Infinity) hi = lo + R;
+        let p = tr.pos[a];
+        for (let k = 1; k < OH; k++) {
+          p += v;
+          if (p > hi) { p = 2 * hi - p; v = -v; }
+          if (p < lo) { p = 2 * lo - p; v = -v; }
+          off[k * 3 + a] = p - tr.pos[a];
+        }
+      }
+      return off;
+    });
+    objExt = objOff.map(off => {
+      if (!off) return null;
+      let a = 0, b = 0, c = 0, d = 0;
+      for (let k = 0; k < OH; k++) { const x = off[k * 3], z = off[k * 3 + 2]; if (x < a) a = x; if (x > b) b = x; if (z < c) c = z; if (z > d) d = z; }
+      return [a, b, c, d];
+    });
+  }
+  // Offset of red triangle i (flat index) t steps from now; sets ox, oy, oz.
+  let ox = 0, oy = 0, oz = 0;
+  function offsetAt(i, t) {
+    const off = objOff[triObj[i / 9]];
+    if (!off) { ox = oy = oz = 0; return; }
+    if (t < 0) t = 0; if (t > OH - 1.001) t = OH - 1.001;
+    const k = Math.floor(t), f = t - k, a = k * 3, b = a + 3;
+    ox = off[a] + f * (off[b] - off[a]); oy = off[a + 1] + f * (off[b + 1] - off[a + 1]); oz = off[a + 2] + f * (off[b + 2] - off[a + 2]);
   }
   function bucketObstacles() {
     obGrid = new Array(GNX * GNZ);
@@ -186,8 +277,8 @@
       const cxm = (xlo + xhi) / 2, czm = (zlo + zhi) / 2, ym = Math.max(O[i + 1], O[i + 4], O[i + 7]);
       const f = floorAt(cxm, czm, ym + 1);
       if (f > -Infinity && ym <= f + P.decal) continue;
-      const vx = vel[i / 3] * H, vz = vel[i / 3 + 2] * H;
-      gridAdd(obGrid, i, xlo + Math.min(0, vx), xhi + Math.max(0, vx), zlo + Math.min(0, vz), zhi + Math.max(0, vz));
+      const ext = objExt[triObj[i / 9]] || [0, 0, 0, 0];
+      gridAdd(obGrid, i, xlo + ext[0], xhi + ext[1], zlo + ext[2], zhi + ext[3]);
     }
   }
   // squared distance from point p to triangle (a, b, c) (Ericson, Real-Time Collision Detection);
@@ -232,8 +323,8 @@
     if (!L) return false;
     const O = G.obst, r2 = r * r;
     for (const i of L) {
-      const v = i / 3;
-      if (dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i) < r2) return true;
+      offsetAt(i, t);
+      if (dist2(x - ox, y - oy, z - oz, O, i) < r2) return true;
     }
     return false;
   }
@@ -245,37 +336,41 @@
     const O = G.obst;
     let best = lim * lim;
     for (const i of L) {
-      const v = i / 3;
-      const d = dist2(x - vel[v] * t, y - vel[v + 1] * t, z - vel[v + 2] * t, O, i);
+      offsetAt(i, t);
+      const d = dist2(x - ox, y - oy, z - oz, O, i);
       if (d < best) best = d;
     }
     return Math.sqrt(best);
   }
 
   // An impact on a surface with unit normal n, while moving into it (vn = v.n < 0): the ball
-  // bounces back with restitution e and loses speed along the surface to friction (fitted on
-  // real landings: after = landT * before + landN * vn, for impacts of 0.5+ units/step).
+  // bounces back with restitution e and loses speed along the surface to friction, about
+  // landLoss(|vn|) * |vn| (fitted on ~120 real landings).
+  const landLoss = (a) => a <= 0.4 ? 0.913 : a <= 1.15 ? 0.913 - (a - 0.4) * 0.137 : a <= 1.85 ? 0.81 - (a - 1.15) * 0.057 : Math.max(0.6, 0.77 - (a - 1.85) * 0.09);
   function impact(s, nx, ny, nz, vn, e) {
     const tx = s.vx - vn * nx, ty = s.vy - vn * ny, tz = s.vz - vn * nz, vt = Math.hypot(tx, ty, tz);
-    const a = 1 - (1 - P.landT) * Math.min(1, -vn / 0.5);
-    const r = vt > 1e-6 ? Math.max(0, (a * vt + P.landN * vn) / vt) : 0;
+    const r = vt > 1e-6 ? Math.max(0, (vt + landLoss(-vn) * vn) / vt) : 0;
     s.vx = tx * r - e * vn * nx; s.vy = ty * r - e * vn * ny; s.vz = tz * r - e * vn * nz;
   }
-  // Push the ball out of any wall it overlaps; an impact if it was moving into it.
-  function walls(s) {
-    const k = gcell(s.x, s.z), L = k < 0 ? null : wallGrid[k];
-    if (!L) return false;
-    const r = P.rad;
-    let hitAny = false;
+  // The ball against every track triangle it overlaps (the floor under its centre is handled
+  // by the height map; this catches sides, rims, edges and creases). The ball is pushed out,
+  // and loses the velocity into the surface (an impact, see impact()), except while it keeps
+  // rolling on the same face. (xp, yp, zp): where it was before this move, which tells which
+  // side of a face it came from. Returns 1 if it hit a wall, 2 if it touched a floor-like face.
+  function contacts(s, xp, yp, zp) {
+    const k = gcell(s.x, s.z), L = k < 0 ? null : triGrid[k];
+    if (!L) return 0;
+    const r = P.rad, r2 = r * r;
+    let res = 0;
     for (const i of L) {
-      const d2 = dist2(s.x, s.y, s.z, WALLS, i);
-      if (d2 >= r * r) continue;
+      const d2 = dist2(s.x, s.y, s.z, TRI, i);
+      if (d2 >= r2) continue;
       const d = Math.sqrt(d2) || 1e-6, nx = (s.x - cq.x) / d, ny = (s.y - cq.y) / d, nz = (s.z - cq.z) / d;
       s.x = cq.x + nx * r; s.y = cq.y + ny * r; s.z = cq.z + nz * r;
       const vn = s.vx * nx + s.vy * ny + s.vz * nz;
-      if (vn < 0) { impact(s, nx, ny, nz, vn, P.wallE); hitAny = true; }
+      if (vn < 0) { impact(s, nx, ny, nz, vn, P.wallE); res |= 1; }
     }
-    return hitAny;
+    return res;
   }
 
   // ---- ball simulation ---------------------------------------------------------------------
@@ -321,8 +416,10 @@
         s.y = yFree; air = true;
         if (s.air === 0) s.air = 1;
       }
-      // sides of platforms, walls of pipes: the ball bounces off them
-      if (walls(s)) s.wall = (s.wall || 0) + 1;
+      // sides of platforms, walls of pipes, rims and edges
+      const c = contacts(s, xp, yp, zp);
+      if (c & 1) s.wall = (s.wall || 0) + 1;
+      if (c & 2) air = false;
       // obstacles, along the whole move
       const n = Math.max(1, Math.ceil(Math.hypot(s.x - xp, s.y - yp, s.z - zp) / 0.5));
       for (let q = 1; q <= n; q++) {
@@ -372,7 +469,8 @@
       const u = plan(s, t);
       if (first === null) first = u;
       if (u) keys++;
-      if (!simStep(s, u, t)) return [t, danger, keys, first, false, 0, air, s.wall || 0];
+      // dying later than the near future doesn't erase how close the near future passes to things
+      if (!simStep(s, u, t)) return [t, danger, keys, first, false, t < P.clearSteps ? 0 : clear, air, s.wall || 0];
       danger += nearDanger(s, t) * (1 - t / H);
       if (s.air > 0 && t < P.clearSteps) air++;
       if (t < P.clearSteps) {
@@ -426,9 +524,15 @@
 
   // ---- decision ----------------------------------------------------------------------------
   const hist = [];   // recent ball positions for velocity
+  // The time scale lives in several places; not every copy is kept up to date in every game.
+  // Take a value that two copies agree on.
+  let lastTs = 2.76;
   const readTs = () => {
-    const v = new Float32Array(window.gameInstance.Module.HEAPU8.buffer, P.tsAddr, 1)[0];
-    return v > 0.5 && v < 20 ? v : 3;
+    const F = new Float32Array(window.gameInstance.Module.HEAPU8.buffer);
+    const v = P.tsAddrs.map(a => F[a >> 2]).filter(x => x > 1 && x < 20);
+    for (let i = 0; i < v.length; i++) for (let j = i + 1; j < v.length; j++)
+      if (Math.abs(v[i] - v[j]) < 0.01) return (lastTs = v[i]);
+    return lastTs;
   };
   let u1 = 0, u2 = 0;
   // Model state of the ball now (after sense()), from its last two positions and this frame's geometry.
@@ -449,7 +553,9 @@
   function sense() { hist.push(B.ball()); if (hist.length > 6) hist.shift(); trackObstacles(); }
   function commit(ui) { u2 = u1; u1 = ui; }
   B.ctl = {
-    reset() { hist.length = 0; u1 = 0; u2 = 0; },
+    reset() { hist.length = 0; u1 = 0; u2 = 0; this.seq = []; this.last = null; tracks = []; ranges.length = 0; },
+    movers(all) { return tracks.filter(t => all || t.vel.some(v => Math.abs(v) > 0.02)).map(t => ({ pos: t.pos, vel: t.vel, pmin: t.pmin, pmax: t.pmax, lo: t.turnLo, hi: t.turnHi, sig: t.sig })); },
+    ranges() { return ranges.slice(); },
     // Call once per decision step, after the frame was rendered with geo.on = true.
     decide() {
       const t0 = B.realNow();
@@ -457,11 +563,15 @@
       const start = current(), b = [start.x, start.y, start.z];
       const H = P.horizon;
       let best = null, bestScore = -Infinity, nPlans = 0;
+      const prevTag = this.last && this.last.best, prevSeq = this.seq || [];
       const consider = (plan, tag) => {
         const r = run(start, plan, H); nPlans++;
-        const sc = r[0] * 10 - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5]) - P.airW * r[6] - P.wallW * Math.min(1, r[7]);
+        const sc = P.survW * (1 - Math.pow(P.gamma, r[0])) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
+          - P.airW * r[6] - P.wallW * Math.min(1, r[7]) + (tag === prevTag || tag === 'prev' ? P.stickW : 0);
         if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan }; }
       };
+      // the previous best plan, as the key sequence it produced, one step on
+      if (prevSeq.length > 1) consider((s, t) => prevSeq[t + 1] ?? 0, 'prev');
       // hold still (no key), steer toward a lateral target, and two-stage target changes
       consider(() => 0, 'none');
       const offs = [];
@@ -479,6 +589,12 @@
       }
       const ui = best ? best.u : 0;
       this.lastPlan = best && best.plan; this.lastStart = start;
+      // remember the chosen plan's keys, to be continued next time
+      this.seq = [];
+      if (best) {
+        const s = Object.assign({}, start);
+        for (let t = 0; t < H; t++) { const u = best.plan(s, t); this.seq.push(u); if (!simStep(s, u, t)) break; }
+      }
       commit(ui);
       this.last = { plans: nPlans, best: best && best.tag, surv: best && best.r[0], zAhead: zMax - b[2], ms: B.realNow() - t0 };
       return ui === -1 ? 1 : ui === 1 ? 2 : 0;   // index into [none, left, right]
@@ -492,7 +608,7 @@
       const s = current(), out = [];
       for (let t = 0; t < us.length; t++) {
         const alive = simStep(s, us[t], t);
-        out.push([s.x, s.y, s.z, alive ? 0 : s.why, s.air]);
+        out.push([s.x, s.y, s.z, alive ? 0 : s.why, s.air, s.gx, s.gz, s.wall || 0, s.vx, s.vy, s.vz]);
         if (!alive) break;
       }
       return out;
@@ -509,7 +625,10 @@
       }
       const obs = [];
       const O = G.obst;
-      for (let i = 0; i + 8 < O.length; i += 9) obs.push([O[i], O[i + 2], O[i + 3], O[i + 5], O[i + 6], O[i + 8], vel[i / 3], vel[i / 3 + 2]]);
+      for (let i = 0; i + 8 < O.length; i += 9) {
+        offsetAt(i, 1);
+        obs.push([O[i], O[i + 2], O[i + 3], O[i + 5], O[i + 6], O[i + 8], ox, oz, oy, Math.min(O[i + 1], O[i + 4], O[i + 7]), Math.max(O[i + 1], O[i + 4], O[i + 7])]);
+      }
       const L1 = new Float32Array(NX * NZ);
       for (let k = 0; k < NX * NZ; k++) L1[k] = LH[k * NL + 1];
       return { x0, z0, NX, NZ, DX, DZ, L0: Array.from(L0), L1: Array.from(L1), ball: b,
