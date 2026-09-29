@@ -40,8 +40,21 @@ def load(paths):
     return rows
 
 
+VFEATS = ["vmin", "vmean", "vall"]
+
+
+def vfeats(r):
+    """Survival of the plan under the model variants (geo_controller.js VARIANTS)."""
+    v = r["vsurv"]
+    return [min(v), sum(v) / len(v), sum(1 for s in v if s >= 60) / len(v)]
+
+
+USE_V = False
+
+
 def matrix(rows):
-    X = np.array([r["feats"] + [1.0 if family(r["tag"]) == fm else 0.0 for fm in FAMILIES] for r in rows], np.float32)
+    X = np.array([r["feats"] + (vfeats(r) if USE_V else []) + [1.0 if family(r["tag"]) == fm else 0.0 for fm in FAMILIES]
+                  for r in rows], np.float32)
     y = np.array([1.0 if r["real"] == 999 else 0.0 for r in rows], np.float32)
     return X, y
 
@@ -104,8 +117,13 @@ def main():
     ap.add_argument("--val-seeds", default="10-12")
     ap.add_argument("--hidden", type=int, default=16)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--vsurv", action="store_true", help="also use survival under the model variants")
     a = ap.parse_args()
+    global USE_V
+    USE_V = a.vsurv
     rows = load(a.data)
+    if USE_V:
+        rows = [r for r in rows if "vsurv" in r]
     lo, _, hi = a.val_seeds.partition("-")
     val = set(range(int(lo), int(hi or lo) + 1))
     tr = [r for r in rows if r["seed"] not in val]
@@ -130,7 +148,7 @@ def main():
               + ", ".join(f"score+{w}*log p: {q[w]}" for w in (0, 50, 100, 200, 400)))
         if h == a.hidden and a.out:
             with open(a.out, "w") as f:
-                json.dump({"feats": FEATS, "families": FAMILIES, "mu": mu.tolist(), "sd": sd.tolist(),
+                json.dump({"feats": FEATS + (VFEATS if USE_V else []), "families": FAMILIES, "mu": mu.tolist(), "sd": sd.tolist(),
                            "w1": net.l1.weight.tolist() if net.l1 is not None else None,
                            "b1": net.l1.bias.tolist() if net.l1 is not None else None,
                            "w2": net.l2.weight[0].tolist(), "b2": float(net.l2.bias[0])}, f)
