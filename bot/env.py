@@ -87,18 +87,20 @@ class SlopeEnv:
         if vp is None:
             # Visible, resizable window: the game renders at the window's own size (as the
             # original page does), so resizing the window re-lays it out instead of cropping.
-            # Play is pressed with the window briefly at 640x480, where its position is known.
+            # Play is pressed with the page briefly emulated at 640x480 (where its position is
+            # known; the OS window itself is left alone), then the emulation is dropped.
             cdp = self.page.context.new_cdp_session(self.page)
-            win = cdp.send("Browser.getWindowForTarget")["windowId"]
-            bounds = cdp.send("Browser.getWindowBounds", {"windowId": win})["bounds"]
-            dw, dh = self.js("() => [outerWidth - innerWidth, outerHeight - innerHeight]")
-            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"width": 640 + dw, "height": 480 + dh}})
+            cdp.send("Emulation.setDeviceMetricsOverride", {"width": 640, "height": 480, "deviceScaleFactor": 1, "mobile": False})
             self.set_res(0, 0)
             self.frames(600)
-            self.page.wait_for_function("document.getElementById('#canvas').width === 640", timeout=10000)
+            try:
+                self.page.wait_for_function("document.getElementById('#canvas').width === 640", timeout=5000)
+            except Exception:
+                pass
+            self.frames(10)
             self.page.mouse.click(320, 282)
             self.frames(10)
-            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"width": bounds["width"], "height": bounds["height"]}})
+            cdp.send("Emulation.clearDeviceMetricsOverride")
             self.frames(390)
             return
         self.page.set_viewport_size({"width": 640, "height": 480})
