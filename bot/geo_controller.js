@@ -29,10 +29,12 @@
     airDead: 40,              // steps airborne that count as falling off
     voidDead: 3,              // airborne steps under the track with no track below and ahead that count as falling off
     aheadRows: 60, underW: 8, // ... looking this far ahead (rows), and this far sideways for track above
+    aheadSeen: 30,            // ... if at least this much of the track ahead is visible
     horizon: 60,              // simulated steps per plan
     budget: 35,               // ms of planning per decision (a decision step is 50 ms)
     minPlans: 24,             // ... but at least this many plans are always tried
     refine: false,            // local search around the best plan when it is in trouble
+    adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
     wallE: 0.3,               // restitution when bouncing off a wall
@@ -412,6 +414,7 @@
   // sideways, if wide)?
   const LANE = [-0.5, 0, 0.5], WIDE = [-8, -6, -4, -2, -1, 0, 1, 2, 4, 6, 8];
   function nothingAhead(x, y, z, wide) {
+    if (z + P.aheadSeen > zMax) return false;   // can't tell: that far ahead isn't drawn yet
     for (const dx of wide ? WIDE : LANE) {
       const k = cell(x + dx, z);
       if (k >= 0 && lowAhead[k] < y) return false;
@@ -445,10 +448,10 @@
       // rolling: sideways friction and the pull down a banked surface; along the track the
       // slope's pull (horizontal part, for a rolling ball) against a constant resistance
       s.vx -= p.dg * ts * s.vx + p.bank * s2 * s.gx;
-      s.vz += s2 * (p.a0 - p.a1 * 2 * s.gz / (1 + s.gz * s.gz)) - p.a2 * ts * s.vz;
+      s.vz += s2 * (p.a0 - p.a1 * 2 * s.gz / (1 + s.gz * s.gz)) - p.a2 * ts * s.vz + p.adapt * bias.g;
     } else {
       s.vx -= p.dax * ts * s.vx;
-      s.vz += s2 * p.fz - p.da * ts * s.vz;
+      s.vz += s2 * p.fz - p.da * ts * s.vz + p.adapt * bias.a;
     }
     s.vy -= p.g * s2 + p.da * ts * s.vy;
     // The move, in sub-steps of at most ~1 unit, so short ramps and thin obstacles aren't skipped.
@@ -613,13 +616,30 @@
       const N = Math.sqrt(1 + hit.gx * hit.gx + hit.gz * hit.gz);
       if (b[1] - (h + P.rad * N) < 0.15) { s.air = 0; s.gx = hit.gx; s.gz = hit.gz; s.hs = h; }
     }
+    lastState = Object.assign({}, s);
     return s;
   }
+  // Online correction of the forward acceleration: the model's one-step prediction from the
+  // last state is compared with where the ball really went, and the (clipped) error is
+  // integrated into a small bias, separately for rolling and flying. The fitted model is an
+  // average over many games; this adapts it to the track and speed at hand.
+  let lastState = null;
+  const bias = { g: 0, a: 0 };
+  function adaptBias() {
+    if (!lastState || hist.length < 2) return;
+    const s = Object.assign({}, lastState);
+    simStep(s, 0, 0);   // (still this map: the new frame's is built later)
+    const err = hist[hist.length - 1][2] - s.z;
+    if (Math.abs(err) > P.adaptClip) return;   // an impact or something else the model missed
+    if (lastState.air === 0 && s.air === 0) bias.g += P.adaptRate * err;
+    else if (lastState.air > 0 && s.air > 0) bias.a += P.adaptRate * err;
+  }
   // Take in this frame: ball position and obstacle motion.
-  function sense() { hist.push(B.ball()); if (hist.length > 6) hist.shift(); trackObstacles(); }
+  function sense() { hist.push(B.ball()); if (hist.length > 6) hist.shift(); adaptBias(); trackObstacles(); }
   function commit(ui) { u2 = u1; u1 = ui; }
   B.ctl = {
-    reset() { hist.length = 0; u1 = 0; u2 = 0; this.seq = []; this.last = null; tracks = []; ranges.length = 0; },
+    reset() { hist.length = 0; u1 = 0; u2 = 0; this.seq = []; this.last = null; tracks = []; ranges.length = 0; lastState = null; bias.g = bias.a = 0; },
+    bias() { return [bias.g, bias.a]; },
     movers(all) { return tracks.filter(t => all || t.vel.some(v => Math.abs(v) > 0.02)).map(t => ({ pos: t.pos, vel: t.vel, pmin: t.pmin, pmax: t.pmax, lo: t.turnLo, hi: t.turnHi, sig: t.sig })); },
     ranges() { return ranges.slice(); },
     // Call once per decision step, after the frame was rendered with geo.on = true.
