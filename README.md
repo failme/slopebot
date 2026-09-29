@@ -100,6 +100,19 @@ What it does with it:
   from obstacles and edges, and time in the air; the best few are re-simulated from
   slightly perturbed starts and judged by their worst case. The first key of the winner is
   pressed. Planning stops after 35 ms.
+* **Learned plan safety.** The physics model can't tell some fatal plans from safe ones, so
+  a small network (`bot/safety.json`, trained by `bot/train_safety.py`) estimates from the
+  features of each predicted path whether the plan really survives; `log(p)` is added to the
+  plan score. Training data comes from `bot/geo_data.py`: while the bot plays, a second,
+  render-free copy of the game follows the same keys and plays every candidate plan for real
+  (~105k labelled plans from 24 games). It never runs at play time.
+
+Results (no time limit, 4 games in parallel; seeds never used for training):
+
+| version | seeds | mean score | median | best | games ≥ 100 |
+| --- | --- | --- | --- | --- | --- |
+| physics model only | 49-96 | 58.4 | 58 | 140 | 5 / 48 |
+| + learned plan safety | 49-96 | **81.4** | 84 | 183 | 15 / 48 |
 
 ## The learned (CNN) bot
 
