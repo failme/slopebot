@@ -435,6 +435,20 @@
   }
 
   let keyLog = null;   // when set, run() records the keys the plan presses (for analysis tools)
+  // How long a plan survives under plausible errors of the model: other physics parameters,
+  // or a slightly different starting sideways / forward speed.
+  const VARIANTS = [{ p: { bank: 0.0104 } }, { p: { bank: 0.0041 } }, { p: { k1: 0.0035, k2: 0.0039 } },
+    { p: { landScale: 1.3 } }, { p: { landScale: 0.7 } }, { dvx: 0.05 }, { dvx: -0.05 }, { fz: 0.03 }, { fz: -0.03 }];
+  function variantSurv(start, plan, H) {
+    return VARIANTS.map(v => {
+      const saved = {};
+      if (v.p) for (const k in v.p) { saved[k] = P[k]; P[k] = v.p[k]; }
+      const st = Object.assign({}, start, { vx: start.vx + (v.dvx || 0), vz: start.vz * (1 + (v.fz || 0)) });
+      const r = run(st, plan, H);
+      Object.assign(P, saved);
+      return r[0];
+    });
+  }
   // Learned estimate that a plan really survives, from its predicted path (run()'s features);
   // a small network trained on plans played in the real game (train_safety.py). Its weights
   // are handed in as B.ctlSafety.
@@ -703,7 +717,8 @@
           - P.airW * r[6] - P.wallW * Math.min(1, r[7]) + (tag === prevTag || tag === 'prev' ? P.stickW : 0);
         if (B.ctlSafety && P.safetyW > 0) sc += P.safetyW * Math.log(Math.max(1e-4, safetyP(r, start, tag)));
         if (this.collect) {
-          this.collect.push({ tag, surv: r[0], sc, keys: keyLog,
+          const kl = keyLog; keyLog = null;
+          this.collect.push({ tag, surv: r[0], sc, keys: kl, vsurv: variantSurv(start, plan, H),
             feats: [r[0], r[1], r[2], r[5], r[6], r[7], ...r[8], start.ts, start.vz, start.air > 0 ? 1 : 0, Math.abs(start.gx)] });
           keyLog = null;
         }

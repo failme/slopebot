@@ -65,7 +65,7 @@ def collect(seed, out, every=50, warm=60, max_steps=6000):
                 real = b_env.js(JUDGE_JS, [[p["keys"] for p in plans], H])
                 for p, r in zip(plans, real):
                     out.write(json.dumps({"seed": seed, "t": t, "tag": p["tag"], "chosen": p["tag"] == last["best"],
-                                          "surv": p["surv"], "sc": p["sc"], "feats": p["feats"], "real": r}) + "\n")
+                                          "surv": p["surv"], "sc": p["sc"], "feats": p["feats"], "vsurv": p.get("vsurv"), "real": r}) + "\n")
                     n += 1
                 out.flush()
                 ok = sum(r == 999 for r in real)
