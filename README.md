@@ -112,7 +112,13 @@ Results (no time limit, 4 games in parallel; seeds never used for training):
 | version | seeds | mean score | median | best | games ≥ 100 |
 | --- | --- | --- | --- | --- | --- |
 | physics model only | 49-96 | 58.4 | 58 | 140 | 5 / 48 |
-| + learned plan safety | 49-96 | **81.4** | 84 | 183 | 15 / 48 |
+| + learned plan safety | 49-96 | 81.4 | 84 | 183 | 15 / 48 |
+| + steering force fitted per game speed | 49-96 | **84.2** | 88 | 147 | 13 / 48 |
+
+The last change makes the model's 10-30 step predictions of the ball's sideways position
+~10-20% more accurate (median error); the score gain is within the noise of 48 games
+(per-seed difference +2.8 ± 6.7). Tried and rejected: adding the plan's survival under
+perturbed physics models as safety-network features (no better on 17k real-game plans).
 
 ## The learned (CNN) bot
 

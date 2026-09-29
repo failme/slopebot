@@ -35,7 +35,7 @@
     minPlans: 24,             // ... but at least this many plans are always tried
     refine: false,            // local search around the best plan when it is in trouble
     safetyW: 50,              // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
-    kExp: 0, tsRef: 3.25,     // steering acceleration ~ ts^(2 + kExp) (kExp 0: ts^2)
+    kExp: -0.7, tsRef: 3.25,  // steering acceleration ~ ts^(2 + kExp) (fitted to one-step errors)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
