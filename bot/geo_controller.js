@@ -38,6 +38,8 @@
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
+    ensemble: [],             // parameter overrides (model variants) the best plans must also survive
+    landScale: 1,             // multiplies the landing friction loss (for model variants)
     wallE: 0.3,               // restitution when bouncing off a wall
     crashV: 0.8,              // running into a wall facing back at more than this (per step) is fatal
     margin0: 0.05, margin1: 0.01, marginMax: 0.35,  // planning keeps this far from red: margin0 + margin1 * steps ahead
@@ -363,7 +365,7 @@
   function impact(s, nx, ny, nz, vn, e) {
     if (-vn > (s.maxVn || 0)) s.maxVn = -vn;
     const tx = s.vx - vn * nx, ty = s.vy - vn * ny, tz = s.vz - vn * nz, vt = Math.hypot(tx, ty, tz);
-    const r = vt > 1e-6 ? Math.max(0, (vt + landLoss(-vn) * vn) / vt) : 0;
+    const r = vt > 1e-6 ? Math.max(0, (vt + P.landScale * landLoss(-vn) * vn) / vt) : 0;
     s.vx = tx * r - e * vn * nx; s.vy = ty * r - e * vn * ny; s.vz = tz * r - e * vn * nz;
   }
   // The ball against the walls (track faces too steep to roll on: sides of platforms, pipe
@@ -745,6 +747,14 @@
           let worst = c.r[0];
           for (const [dvx, fz] of P.perturb) {
             const r = run(Object.assign({}, start, { vx: start.vx + dvx, vz: start.vz * (1 + fz) }), c.plan, H);
+            if (r[0] < worst) worst = r[0];
+          }
+          // ... and under plausible variants of the physics model itself
+          for (const ov of P.ensemble) {
+            const saved = {};
+            for (const k in ov) { saved[k] = P[k]; P[k] = ov[k]; }
+            const r = run(start, c.plan, H);
+            Object.assign(P, saved);
             if (r[0] < worst) worst = r[0];
           }
           const sc = c.sc - P.robustW * (survScore(c.r[0]) - survScore(worst));
