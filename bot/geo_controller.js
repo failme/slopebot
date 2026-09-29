@@ -34,6 +34,7 @@
     budget: 35,               // ms of planning per decision (a decision step is 50 ms)
     minPlans: 24,             // ... but at least this many plans are always tried
     refine: false,            // local search around the best plan when it is in trouble
+    safetyW: 0,               // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
@@ -432,6 +433,20 @@
   }
 
   let keyLog = null;   // when set, run() records the keys the plan presses (for analysis tools)
+  // Learned estimate that a plan really survives, from its predicted path (run()'s features);
+  // a small network trained on plans played in the real game (train_safety.py). Its weights
+  // are handed in as B.ctlSafety.
+  function safetyP(r, start, tag) {
+    const W = B.ctlSafety;
+    const fam = tag === 'prev' || tag === 'none' ? tag : tag[0] === 'x' ? 'x' : tag.indexOf('>') >= 0 ? 'lane>' : 'lane/';
+    const x = [r[0], r[1], r[2], r[5], r[6], r[7], ...r[8], start.ts, start.vz, start.air > 0 ? 1 : 0, Math.abs(start.gx),
+               ...W.families.map(f => f === fam ? 1 : 0)];
+    for (let i = 0; i < x.length; i++) x[i] = (x[i] - W.mu[i]) / W.sd[i];
+    let h = x;
+    if (W.w1) h = W.w1.map((row, j) => Math.tanh(row.reduce((acc, w, i) => acc + w * x[i], W.b1[j])));
+    const o = W.w2.reduce((acc, w, i) => acc + w * h[i], W.b2);
+    return 1 / (1 + Math.exp(-o));
+  }
   // Extra distance to keep from red obstacles when planning, growing with how far ahead the
   // prediction is (its error grows): a near miss in the model is a hit in reality too often.
   let planning = false;
@@ -682,8 +697,9 @@
         if (nPlans >= P.minPlans && B.realNow() - t0 > P.budget) return;
         if (this.collect) keyLog = [];
         const r = run(start, plan, H); nPlans++;
-        const sc = survScore(r[0]) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
+        let sc = survScore(r[0]) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
           - P.airW * r[6] - P.wallW * Math.min(1, r[7]) + (tag === prevTag || tag === 'prev' ? P.stickW : 0);
+        if (B.ctlSafety && P.safetyW > 0) sc += P.safetyW * Math.log(Math.max(1e-4, safetyP(r, start, tag)));
         if (this.collect) {
           this.collect.push({ tag, surv: r[0], sc, keys: keyLog,
             feats: [r[0], r[1], r[2], r[5], r[6], r[7], ...r[8], start.ts, start.vz, start.air > 0 ? 1 : 0, Math.abs(start.gx)] });
