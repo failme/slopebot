@@ -47,6 +47,8 @@ def open_game(seed, watch=False, window=(960, 720), res=(320, 240), budget=None)
     e.js("() => { __bot.findBall(); __bot.ctl.reset(); }")
     if budget is not None:
         e.js("b => { __bot.ctlParams.budget = b; }", budget)
+    if os.environ.get("GEO_PARAMS"):   # e.g. GEO_PARAMS='{"gamma": 1}' to try other settings
+        e.js("p => { Object.assign(__bot.ctlParams, p); }", json.loads(os.environ["GEO_PARAMS"]))
     return e
 
 

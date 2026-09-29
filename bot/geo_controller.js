@@ -32,6 +32,7 @@
     horizon: 60,              // simulated steps per plan
     budget: 35,               // ms of planning per decision (a decision step is 50 ms)
     minPlans: 24,             // ... but at least this many plans are always tried
+    refine: false,            // local search around the best plan when it is in trouble
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
     wallE: 0.3,               // restitution when bouncing off a wall
@@ -42,6 +43,7 @@
     clearSteps: 30,           // steps over which clearance to obstacles / edges is measured
     clearCap: 1.5,            // clearance beyond this doesn't count
     survW: 200, gamma: 0.95,  // survival score: survW * (1 - gamma^steps), so distant (less certain) deaths weigh less
+                              // (gamma 1: survW / 20 per step, undiscounted)
     clearW: 25,               // score per unit of clearance
     stickW: 10,               // bonus for continuing the previous plan (avoids dithering between equal options)
     airW: 3,                  // penalty per airborne step (leaving the surface is where predictions are worst)
@@ -629,7 +631,7 @@
       const H = P.horizon;
       let best = null, bestScore = -Infinity, nPlans = 0;
       const prevTag = this.last && this.last.best, prevSeq = this.seq || [];
-      const survScore = (n) => P.survW * (1 - Math.pow(P.gamma, n));
+      const survScore = (n) => P.gamma >= 1 ? P.survW / 20 * n : P.survW * (1 - Math.pow(P.gamma, n));
       const top = [];   // the best few plans, re-checked for robustness below
       const consider = (plan, tag) => {
         // real time: the plans are tried in order of importance; stop when time is up (but
@@ -661,6 +663,14 @@
       for (const f1 of F) for (const T1 of [6, 14, 24]) for (const f2 of F) {
         if (f1 === f2) continue;
         consider((s, t) => pursue(s, t < T1 ? f1 : f2, 5), `lane${f1}>${f2}@${T1}`);
+      }
+      // Local search when the best plan still dies or passes close to danger: hold one key for
+      // a short burst at some point, then let the plan steer again.
+      if (P.refine && best && (best.r[0] < H || best.r[5] < 0.5)) {
+        const base = best.plan, bt = best.tag;
+        for (const k0 of [0, 2, 4, 7, 11, 16, 22]) for (const L of [3, 6, 10]) for (const a of [-1, 0, 1]) {
+          consider((s, t) => (t >= k0 && t < k0 + L) ? a : base(s, t), `${bt}+${a}@${k0}/${L}`);
+        }
       }
       // Robustness: the model is never exact, so replay the best few plans from slightly
       // different starts (sideways speed, forward speed) and judge each by its worst case.
