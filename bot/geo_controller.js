@@ -360,6 +360,7 @@
   // landLoss(|vn|) * |vn| (fitted on ~120 real landings).
   const landLoss = (a) => a <= 0.4 ? 0.913 : a <= 1.15 ? 0.913 - (a - 0.4) * 0.137 : a <= 1.85 ? 0.81 - (a - 1.15) * 0.057 : Math.max(0.6, 0.77 - (a - 1.85) * 0.09);
   function impact(s, nx, ny, nz, vn, e) {
+    if (-vn > (s.maxVn || 0)) s.maxVn = -vn;
     const tx = s.vx - vn * nx, ty = s.vy - vn * ny, tz = s.vz - vn * nz, vt = Math.hypot(tx, ty, tz);
     const r = vt > 1e-6 ? Math.max(0, (vt + landLoss(-vn) * vn) / vt) : 0;
     s.vx = tx * r - e * vn * nx; s.vy = ty * r - e * vn * ny; s.vz = tz * r - e * vn * nz;
@@ -527,11 +528,18 @@
   // Returns [stepsSurvived, danger, keyPresses, firstU, alive, clearance, airSteps, wallHits];
   // clearance is the smallest gap (beyond the ball's radius) to an obstacle or a floor edge
   // over the near future.
+  // r[8]: features of the predicted path, for the learned estimate of whether the plan really
+  // survives: [landings, airborne steps, closest floor edge sideways, closest obstacle, share of
+  // rolling on banked surfaces, top sideways speed, first airborne step, hardest impact].
   function run(start, plan, H) {
     const s = Object.assign({}, start);
+    s.maxVn = 0;
     let danger = 0, keys = 0, first = null, clear = P.clearCap, air = 0;
+    let nLand = 0, airTot = 0, minEdge = 3, minObs = 2, bankN = 0, groundN = 0, maxVx = 0, firstAir = H, wasAir = s.air > 0;
+    const done = (t, alive, cl) => [t, danger, keys, first ?? 0, alive, cl, air, s.wall || 0,
+      [nLand, airTot, minEdge, minObs, groundN ? bankN / groundN : 0, maxVx, firstAir, s.maxVn]];
     for (let t = 0; t < H; t++) {
-      if (s.z > zMax - 2) return [H, danger, keys, first ?? 0, true, clear, air, s.wall || 0];   // past what we can see
+      if (s.z > zMax - 2) return done(H, true, clear);   // past what we can see
       const u = plan(s, t);
       if (first === null) first = u;
       if (u) keys++;
@@ -540,22 +548,35 @@
       // things. A fall counts from when the ball left the ground (it is only noticed later).
       if (!simStep(s, u, t)) {
         const td = s.why === 1 ? Math.min(t, (s.gT ?? -1) + 3) : t;
-        return [td, danger, keys, first, false, td < P.clearSteps ? 0 : clear, air, s.wall || 0];
+        return done(td, false, td < P.clearSteps ? 0 : clear);
       }
       danger += nearDanger(s, t) * (1 - t / H);
-      if (s.air > 0 && t < P.clearSteps) air++;
-      if (t < P.clearSteps) {
-        clear = Math.min(clear, obstacleDist(s.x, s.y, s.z, t + 1, P.clearCap + P.rad) - P.rad);
-        if (s.air === 0) {
+      if (Math.abs(s.vx) > maxVx) maxVx = Math.abs(s.vx);
+      if (s.air > 0) { airTot++; if (firstAir === H) firstAir = t; if (t < P.clearSteps) air++; }
+      else {
+        if (wasAir) nLand++;
+        groundN++; if (Math.abs(s.gx) > 0.3) bankN++;
+        if (t < P.clearSteps || (t & 1) === 0) {
+          // sideways room to where the floor ends
           const y = s.hs;
-          for (const dx of [0.6, 1.0, 1.5]) {
-            if (dx - 0.5 >= clear) break;
-            if (floorAt(s.x - dx, s.z, y + 0.8) < y - 1.5 || floorAt(s.x + dx, s.z, y + 0.8) < y - 1.5) { clear = Math.min(clear, dx - 0.5); break; }
+          for (const dx of [0.6, 1.0, 1.5, 2.5]) {
+            if (dx >= minEdge) break;
+            if (floorAt(s.x - dx, s.z, y + 0.8) < y - 1.5 || floorAt(s.x + dx, s.z, y + 0.8) < y - 1.5) {
+              minEdge = dx;
+              if (t < P.clearSteps) clear = Math.min(clear, dx - 0.5);
+              break;
+            }
           }
         }
       }
+      wasAir = s.air > 0;
+      if (t < P.clearSteps || (t & 1) === 0) {
+        const od = obstacleDist(s.x, s.y, s.z, t + 1, P.clearCap + P.rad) - P.rad;
+        if (od < minObs) minObs = od;
+        if (t < P.clearSteps) clear = Math.min(clear, od);
+      }
     }
-    return [H, danger, keys, first, true, clear, air, s.wall || 0];
+    return done(H, true, clear);
   }
 
   // ---- the track ahead --------------------------------------------------------------------
@@ -663,7 +684,11 @@
         const r = run(start, plan, H); nPlans++;
         const sc = survScore(r[0]) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
           - P.airW * r[6] - P.wallW * Math.min(1, r[7]) + (tag === prevTag || tag === 'prev' ? P.stickW : 0);
-        if (this.collect) { this.collect.push({ tag, surv: r[0], sc, keys: keyLog }); keyLog = null; }
+        if (this.collect) {
+          this.collect.push({ tag, surv: r[0], sc, keys: keyLog,
+            feats: [r[0], r[1], r[2], r[5], r[6], r[7], ...r[8], start.ts, start.vz, start.air > 0 ? 1 : 0, Math.abs(start.gx)] });
+          keyLog = null;
+        }
         if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan, sc }; }
         if (top.length < P.robustK || sc > top[top.length - 1].sc) {
           top.push({ u: r[3], r, tag, plan, sc });
