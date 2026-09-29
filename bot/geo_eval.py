@@ -38,7 +38,7 @@ REPLAY_JS = """([keys, K]) => {
 
 
 def record(seed, max_steps=8000):
-    e = open_game(seed)
+    e = open_game(seed, budget=1e9)   # no time limit: the same decisions every time
     e.js("() => { __bot.norender = true; }")
     keys, a, score = [0], 0, 0
     try:
@@ -53,7 +53,7 @@ def record(seed, max_steps=8000):
 
 
 def replay(seed, keys):
-    e = open_game(seed)
+    e = open_game(seed, budget=1e9)   # no time limit: the same decisions every time
     e.js("() => { __bot.norender = true; }")
     try:
         out = []
@@ -74,7 +74,7 @@ def death_report(seed, look=60):
     way out); if not, the model was wrong, and the divergence shows where."""
     keys, score = record(seed)
     death = len(keys)
-    e = open_game(seed)
+    e = open_game(seed, budget=1e9)   # no time limit: the same decisions every time
     e.js("() => { __bot.norender = true; }")
     try:
         rows = e.js(REPLAY_JS.replace("const out = [];", f"const out = []; const T0 = {max(0, death - look - 1)};")

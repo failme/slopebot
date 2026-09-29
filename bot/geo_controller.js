@@ -36,6 +36,7 @@
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
     wallE: 0.3,               // restitution when bouncing off a wall
     crashV: 0.8,              // running into a wall facing back at more than this (per step) is fatal
+    margin0: 0.05, margin1: 0.01, marginMax: 0.35,  // planning keeps this far from red: margin0 + margin1 * steps ahead
     edgeW: 1.2,               // lateral distance at which a missing floor / obstacle counts as "close"
     decal: -1e9,              // red geometry less than this above the floor is a marking, not an obstacle
     clearSteps: 30,           // steps over which clearance to obstacles / edges is measured
@@ -405,9 +406,11 @@
       }
     }
   }
-  // Nothing below height y ahead of (x, z), in the ball's lane?
-  function nothingAhead(x, y, z) {
-    for (const dx of [-0.5, 0, 0.5]) {
+  // Nothing below height y ahead of (x, z), in the ball's lane (or anywhere within P.underW
+  // sideways, if wide)?
+  const LANE = [-0.5, 0, 0.5], WIDE = [-8, -6, -4, -2, -1, 0, 1, 2, 4, 6, 8];
+  function nothingAhead(x, y, z, wide) {
+    for (const dx of wide ? WIDE : LANE) {
       const k = cell(x + dx, z);
       if (k >= 0 && lowAhead[k] < y) return false;
     }
@@ -421,6 +424,11 @@
     }
     return false;
   }
+
+  // Extra distance to keep from red obstacles when planning, growing with how far ahead the
+  // prediction is (its error grows): a near miss in the model is a hit in reality too often.
+  let planning = false;
+  const margin = (t) => planning ? Math.min(P.marginMax, P.margin0 + P.margin1 * t) : 0;
 
   // ---- ball simulation ---------------------------------------------------------------------
   // s = {x, y, z, vx, vy, vz (displacement per step), u1, u2 (keys held the last two steps),
@@ -473,14 +481,15 @@
       const n = Math.max(1, Math.ceil(Math.hypot(s.x - xp, s.y - yp, s.z - zp) / 0.5));
       for (let q = 1; q <= n; q++) {
         const w = q / n;
-        if (hitsObstacle(xp + w * (s.x - xp), yp + w * (s.y - yp), zp + w * (s.z - zp), p.rad, t + (k + w) * f)) { s.why = 2; return false; }
+        if (hitsObstacle(xp + w * (s.x - xp), yp + w * (s.y - yp), zp + w * (s.z - zp), p.rad + margin(t), t + (k + w) * f)) { s.why = 2; return false; }
       }
     }
     if (air) {
       s.air++;
-      // fallen off: under the track that is beside it, with no track below anywhere ahead in
-      // its lane (see buildLowAhead); failing that, airDead catches it
-      if (s.air > 2 && underTrack(s.x, s.y, s.z) && nothingAhead(s.x, s.y, s.z)) s.void = (s.void || 0) + 1;
+      // fallen off: no track below anywhere ahead in its lane (see buildLowAhead), and either
+      // under the track that is beside it or nowhere near any track; failing that, airDead
+      if (s.air > 2 && nothingAhead(s.x, s.y, s.z, false) &&
+          (underTrack(s.x, s.y, s.z) || nothingAhead(s.x, s.y, s.z, true))) s.void = (s.void || 0) + 1;
       else s.void = 0;
       if (s.air > p.airDead || s.void > p.voidDead) { s.why = 1; return false; }   // fell off
     } else { s.void = 0; s.gT = t; }
@@ -616,6 +625,7 @@
       const t0 = B.realNow();
       sense();
       const start = current(), b = [start.x, start.y, start.z];
+      planning = true;
       const H = P.horizon;
       let best = null, bestScore = -Infinity, nPlans = 0;
       const prevTag = this.last && this.last.best, prevSeq = this.seq || [];
@@ -674,8 +684,10 @@
         const s = Object.assign({}, start);
         for (let t = 0; t < H; t++) { const u = best.plan(s, t); this.seq.push(u); if (!simStep(s, u, t)) break; }
       }
+      planning = false;
       commit(ui);
-      this.last = { plans: nPlans, best: best && best.tag, surv: best && best.r[0], zAhead: zMax - b[2], ms: B.realNow() - t0 };
+      this.last = { plans: nPlans, best: best && best.tag, surv: best && best.r[0], clear: best && +best.r[5].toFixed(2),
+                    zAhead: zMax - b[2], ms: B.realNow() - t0 };
       return ui === -1 ? 1 : ui === 1 ? 2 : 0;   // index into [none, left, right]
     },
     // When something else drives: sense() after each frame, then commit(key) with the key it holds next.

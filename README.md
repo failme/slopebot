@@ -63,6 +63,44 @@ Restoring the heap desynchronises Unity's GPU bookkeeping, so the planner runs i
 browser with all WebGL calls stubbed out; what you watch is a second browser fed the same
 inputs (`bot/teacher.py`), which stays identical because the game is deterministic.
 
+## The real-time bot (geometry controller)
+
+`bot/geo_controller.js` plays in real time on any seed: every 50 ms game step it decides in
+~15-30 ms, using only what the game shows it at that moment. It never saves, restores or
+fast-forwards the game.
+
+```bash
+python bot/geo_play.py --seed 7 --watch      # watch it play, real time
+python bot/geo_play.py --seeds 1-8           # headless, faster than real time
+./bot/geo_bench.sh /tmp/bench 1 24           # seeds 1..24, 4 games in parallel
+```
+
+What it reads each step:
+
+* the ball's position and the game's time scale, from game memory (`planner.js` finds the
+  ball; the time scale grows from 2.75 to ~3.4 during a game and scales all the physics);
+* the geometry the game draws that frame (`bot/geotap.js` mirrors WebGL buffers and decodes
+  every draw call that uses the track or obstacle textures into world-space triangles).
+
+What it does with it:
+
+* **Map.** Track triangles are rasterised into a height map around the ball (up to three
+  surface layers per cell, each stored as its exact plane); steep faces become walls; red
+  obstacles are grouped into rigid objects and followed from frame to frame, and movers
+  (pistons, sliders) are predicted as the constant-speed back-and-forth motion they follow.
+* **Ball model.** A small physical model fitted on recorded games: steering response to
+  the keys (with the game's 1-2 step input lag), rolling friction and banked-surface pull,
+  gravity and drag scaled by the time scale, landings that lose speed to friction in
+  proportion to the impact, bounces off walls, and the ways to die (hitting red, running
+  head-on into a wall, falling off). `python bot/geo_eval.py SEED out.json` measures how
+  well it predicts a real game.
+* **Planning.** ~200 candidate steering policies (follow a lane across the track, switch
+  lanes, steer to a fixed offset, keep the previous plan) are simulated 3 s ahead. They are
+  scored on survival (discounted, so distant, less certain deaths count less), clearance
+  from obstacles and edges, and time in the air; the best few are re-simulated from
+  slightly perturbed starts and judged by their worst case. The first key of the winner is
+  pressed. Planning stops after 35 ms.
+
 ## The learned (CNN) bot
 
 The original plan was to distil the planner into a CNN that only sees the screen
@@ -93,6 +131,13 @@ would need far more data (or a different target) than this machine produces
 | `bot/planner_run.py` | the planner bot: plays a game, records inputs, optional live view |
 | `bot/play.py` | replay / record videos; run the CNN bot |
 | `bot/collect.py`, `bot/train.py`, `bot/model.py` | CNN imitation-learning pipeline |
+| `bot/geotap.js` | captures the track / obstacle triangles of every frame from WebGL |
+| `bot/geo_controller.js` | the real-time bot: map, ball model, planner |
+| `bot/geo_play.py` | runs the real-time bot (headless, `--watch`, `--out` to save a game for `play.py --replay`) |
+| `bot/geo_bench.sh` | benchmark over a range of seeds |
+| `bot/geo_eval.py` | model accuracy on a replayed game; `death` mode explains why a game ended |
+| `bot/geo_quality.py` | model vs real game: which sampled key sequences survive |
+| `bot/geo_debug.py` | crash report image: game view + top-down map with planned and real paths |
 
 ## Results
 

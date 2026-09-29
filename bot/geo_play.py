@@ -2,8 +2,11 @@
 
     python bot/geo_play.py --seeds 1-5          # headless evaluation, fast (virtual time)
     python bot/geo_play.py --seed 7 --watch     # visible browser, real time
+    python bot/geo_play.py --seed 7 --out runs/geo7.json   # save the keys, then:
+    python bot/play.py --replay runs/geo7.json --record geo7.webm
 """
 import argparse
+import json
 import os
 import sys
 import time
@@ -47,17 +50,20 @@ def open_game(seed, watch=False, window=(960, 720), res=(320, 240), budget=None)
     return e
 
 
-def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
+def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720), out=None):
+    """out: save the keys pressed (planner_run.py format), to replay or record a video of the
+    game with play.py --replay (the game is deterministic)."""
     budget = float(os.environ["GEO_BUDGET"]) if os.environ.get("GEO_BUDGET") else None   # ms per decision
     e = open_game(seed, watch, window, res=(640, 480) if watch else (320, 240), budget=budget)
     if not watch:
         e.js("() => { __bot.norender = true; }")   # geometry is still captured
     a, t, t0, score, worst, total_ms = 0, 0, time.time(), 0, 0.0, 0.0
-    recent = []
+    recent, keys = [], []
     try:
-        chunk = 1 if watch else 1
+        chunk = 1
         t_next = time.time()
         while t < max_steps:
+            keys.append(a)
             a, dead, score, last = e.js(STEP_JS, [a, chunk, watch])
             t += chunk
             if last:
@@ -75,6 +81,9 @@ def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
                 break
     finally:
         e.close()
+        if out:
+            with open(out, "w") as f:
+                json.dump({"seed": seed, "score": score, "actions": "".join("NLR"[k] for k in keys)}, f)
     return score, t, worst, total_ms / max(1, t)
 
 
@@ -84,6 +93,7 @@ def main():
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--max-steps", type=int, default=20000)
+    ap.add_argument("--out", default=None, help="save the game's keys (one seed), for play.py --replay")
     a = ap.parse_args()
     seeds = [a.seed] if a.seed is not None else []
     if a.seeds:
@@ -94,7 +104,7 @@ def main():
         seeds = [random.randint(1, 1 << 30)]
     scores = []
     for s in seeds:
-        sc, steps, worst, mean_ms = play(s, a.watch, a.max_steps)
+        sc, steps, worst, mean_ms = play(s, a.watch, a.max_steps, out=a.out)
         scores.append(sc)
         print(f"seed {s}: score {sc} ({steps} steps, decisions {mean_ms:.1f} ms on average, slowest {worst:.1f} ms)", flush=True)
     if len(scores) > 1:

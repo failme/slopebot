@@ -120,7 +120,7 @@ def main():
     if len(sys.argv) > 4:   # overlay a reference path: positions of a planner run on the same seed
         import json
         ref = json.load(open(sys.argv[4]))
-    e = open_game(seed); e.js("() => { __bot.norender = true; }")
+    e = open_game(seed, budget=1e9); e.js("() => { __bot.norender = true; }")
     a, t, views, pos = 0, 0, {}, []
     while t <= max(steps) + 40:
         a, dead, score, last = e.js(STEP_JS, [a, 1, False])

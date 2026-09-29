@@ -33,10 +33,17 @@ JUDGE_JS = """([keys, T, seqs, H]) => {
   const s0 = __bot.save(), air0 = Object.assign({}, __bot.air);
   const real = seqs.map(us => {
     __bot.load(s0); __bot.air = Object.assign({}, air0);
-    if (__bot.rollout(us.map(u => [K[u], 1])).dead) return false;
-    // alive after H steps; not if it is already falling for good
-    const r2 = __bot.rollout([[null, 12]]);
-    return !r2.dead && __bot.air.n < 10;
+    // alive through the sequence, and then back on the ground (not falling) within 40 steps
+    for (const u of us) {
+      __bot.run(1, 50, K[u]); __bot.trackAir();
+      if (__bot.isDead()) return false;
+    }
+    for (let k = 0; k < 40; k++) {
+      if (__bot.air.n === 0) return true;
+      __bot.run(1, 50, null); __bot.trackAir();
+      if (__bot.isDead()) return false;
+    }
+    return false;
   });
   __bot.load(s0); __bot.air = air0;
   return [model, real];
@@ -62,6 +69,8 @@ def main():
     ap.add_argument("--every", type=int, default=150)
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--out", default=None, help="save per-checkpoint results (json)")
+    ap.add_argument("--before-death", default=None,
+                    help="checkpoints this many steps before the game's end instead, e.g. 60,90,130")
     a = ap.parse_args()
     lo, _, hi = a.seeds.partition("-")
     rng = random.Random(1)
@@ -69,9 +78,12 @@ def main():
     results = []
     for seed in range(int(lo), int(hi or lo) + 1):
         keys, score = record(seed)
-        for T in range(a.every, len(keys) - 5, a.every):
+        points = range(a.every, len(keys) - 5, a.every)
+        if a.before_death:
+            points = [len(keys) - int(b) for b in a.before_death.split(",") if len(keys) > int(b)]
+        for T in points:
             seqs = sequences(rng, a.n, keys[T + 1:])
-            e = open_game(seed)
+            e = open_game(seed, budget=1e9)   # no time limit: the same decisions every time
             e.js("() => { __bot.norender = true; }")
             try:
                 model, real = e.js(JUDGE_JS, [keys, T, seqs, H])
@@ -85,7 +97,8 @@ def main():
             results.append({"seed": seed, "T": T, **c, "did": [model[0], real[0]]})
             prec = c["ms_rs"] / max(1, c["ms_rs"] + c["ms_rd"])
             print(f"seed {seed} step {T}: model-safe {c['ms_rs'] + c['ms_rd']:3d} (really safe {prec:.0%}), "
-                  f"really safe {c['ms_rs'] + c['md_rs']:3d} (model agrees {c['ms_rs'] / max(1, c['ms_rs'] + c['md_rs']):.0%})",
+                  f"really safe {c['ms_rs'] + c['md_rs']:3d} (model agrees {c['ms_rs'] / max(1, c['ms_rs'] + c['md_rs']):.0%}); "
+                  f"what the bot did: model {'safe' if model[0] else 'dies'}, real {'safe' if real[0] else 'dies'}",
                   flush=True)
     prec = tot["ms_rs"] / max(1, tot["ms_rs"] + tot["ms_rd"])
     rec = tot["ms_rs"] / max(1, tot["ms_rs"] + tot["md_rs"])
