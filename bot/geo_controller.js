@@ -35,6 +35,7 @@
     minPlans: 24,             // ... but at least this many plans are always tried
     refine: false,            // local search around the best plan when it is in trouble
     safetyW: 50,              // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
+    kExp: 0, tsRef: 3.25,     // steering acceleration ~ ts^(2 + kExp) (kExp 0: ts^2)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
     perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
@@ -475,7 +476,8 @@
   function simStep(s, u, t = 0) {
     const p = P, ts = s.ts, s2 = ts * ts;
     // Velocity changes over the step (the fitted per-step model; velocities are displacements per step).
-    s.vx += s2 * (p.k1 * s.u1 + p.k2 * s.u2);
+    const sk = p.kExp ? s2 * Math.pow(ts / p.tsRef, p.kExp) : s2;   // steering grows slower than ts^2
+    s.vx += sk * (p.k1 * s.u1 + p.k2 * s.u2);
     s.u2 = s.u1; s.u1 = u;
     if (s.air === 0) {
       // rolling: sideways friction and the pull down a banked surface; along the track the
@@ -548,7 +550,7 @@
   // `rate`: fraction of the remaining gap to close per step.
   function toward(s, xt, rate = 0.12) {
     const p = P;
-    const s2 = s.ts * s.ts, pend = s2 * (p.k1 * s.u1 + p.k2 * s.u2 + p.k2 * s.u1);
+    const s2 = s.ts * s.ts * (p.kExp ? Math.pow(s.ts / p.tsRef, p.kExp) : 1), pend = s2 * (p.k1 * s.u1 + p.k2 * s.u2 + p.k2 * s.u1);
     const want = Math.max(-0.9, Math.min(0.9, rate * (xt - s.x)));
     const err = want - (s.vx + pend);
     const dead = 0.02 + 0.004 * s.vz;
