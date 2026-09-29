@@ -12,7 +12,7 @@
 (() => {
   const B = window.__bot, G = B.geo;
 
-  // ---- model constants (units per 50 ms step), see fit_model.py -----------------------------
+  // ---- model constants (units per 50 ms step), fitted on recorded games (see geo_eval.py) ---
   const P = B.ctlParams = {
     // Per-step quantities scale with the game's time scale ts (Time.timeScale, read from
     // memory; it grows from ~2.75 to ~3.4 during a game): accelerations with ts^2, drag with ts.
@@ -27,9 +27,15 @@
     tsAddrs: [26580708, 22398436, 31244388],  // copies of Time.timeScale (float) in the Emscripten heap
     reach: 0.3,               // a surface whose plane passes this far above the ball's last contact is a wall/block top, not a ramp
     airDead: 40,              // steps airborne that count as falling off
-    voidDead: 12,             // steps with no surface anywhere below that count as falling off
+    voidDead: 3,              // airborne steps under the track with no track below and ahead that count as falling off
+    aheadRows: 60, underW: 8, // ... looking this far ahead (rows), and this far sideways for track above
     horizon: 60,              // simulated steps per plan
+    budget: 35,               // ms of planning per decision (a decision step is 50 ms)
+    minPlans: 24,             // ... but at least this many plans are always tried
+    robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
+    perturb: [[0.04, 0], [-0.04, 0], [0, 0.03], [0, -0.03]],  // (sideways speed + dvx, forward speed * (1 + f))
     wallE: 0.3,               // restitution when bouncing off a wall
+    crashV: 0.8,              // running into a wall facing back at more than this (per step) is fatal
     edgeW: 1.2,               // lateral distance at which a missing floor / obstacle counts as "close"
     decal: -1e9,              // red geometry less than this above the floor is a marking, not an obstacle
     clearSteps: 30,           // steps over which clearance to obstacles / edges is measured
@@ -74,11 +80,11 @@
     const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
     const ny = uz * vx - ux * vz, nx = uy * vz - uz * vy, nz = ux * vy - uy * vx;
     const nl = Math.hypot(nx, ny, nz) || 1;
-    // walls can be touched by the ball from any side (see contacts()); floors are in the height map
-    const w = TRI.length;
-    TRI.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-    TRN.push(nx / nl, ny / nl, nz / nl);
     if (Math.abs(ny) / nl < 0.3) {                   // walls/sides: not something to roll on
+      // the ball bounces off these (see contacts()); floors go into the height map
+      const w = TRI.length;
+      TRI.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+      TRN.push(nx / nl, ny / nl, nz / nl);
       gridAdd(triGrid, w, Math.min(ax, bx, cx), Math.max(ax, bx, cx), Math.min(az, bz, cz), Math.max(az, bz, cz), 0.6);
       return;
     }
@@ -104,6 +110,7 @@
     clear(ball[0], ball[2]);
     const T = G.track;
     for (let i = 0; i + 8 < T.length; i += 9) tri(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8]);
+    buildLowAhead();
     bucketObstacles();
   }
   const cell = (x, z) => {
@@ -352,12 +359,11 @@
     const r = vt > 1e-6 ? Math.max(0, (vt + landLoss(-vn) * vn) / vt) : 0;
     s.vx = tx * r - e * vn * nx; s.vy = ty * r - e * vn * ny; s.vz = tz * r - e * vn * nz;
   }
-  // The ball against every track triangle it overlaps (the floor under its centre is handled
-  // by the height map; this catches sides, rims, edges and creases). The ball is pushed out,
-  // and loses the velocity into the surface (an impact, see impact()), except while it keeps
-  // rolling on the same face. (xp, yp, zp): where it was before this move, which tells which
-  // side of a face it came from. Returns 1 if it hit a wall, 2 if it touched a floor-like face.
-  function contacts(s, xp, yp, zp) {
+  // The ball against the walls (track faces too steep to roll on: sides of platforms, pipe
+  // walls; their edges are the rims of platforms). It is pushed out and, if it was moving into
+  // the wall, bounces off it (see impact()). Returns 1 if it hit one, 2 if it crashed into one
+  // head-on (the game ends the run when the ball is stopped like that).
+  function contacts(s) {
     const k = gcell(s.x, s.z), L = k < 0 ? null : triGrid[k];
     if (!L) return 0;
     const r = P.rad, r2 = r * r;
@@ -368,9 +374,52 @@
       const d = Math.sqrt(d2) || 1e-6, nx = (s.x - cq.x) / d, ny = (s.y - cq.y) / d, nz = (s.z - cq.z) / d;
       s.x = cq.x + nx * r; s.y = cq.y + ny * r; s.z = cq.z + nz * r;
       const vn = s.vx * nx + s.vy * ny + s.vz * nz;
-      if (vn < 0) { impact(s, nx, ny, nz, vn, P.wallE); res |= 1; }
+      if (vn < 0) {
+        if (nz < -0.7 && -vn > P.crashV) return 2;
+        impact(s, nx, ny, nz, vn, P.wallE); res |= 1;
+      }
     }
     return res;
+  }
+
+  // For each cell, the lowest surface in its column (x) over the next P.aheadRows rows (z):
+  // an airborne ball with nothing below it there has gone over the side for good, while one
+  // jumping a gap or dropping down a chute still has track somewhere below and ahead.
+  const lowAhead = new Float32Array(NX * NZ), lowCell = new Float32Array(NZ);
+  function buildLowAhead() {
+    const W = P.aheadRows, dq = new Int32Array(NZ);
+    for (let i = 0; i < NX; i++) {
+      for (let j = 0; j < NZ; j++) {
+        const b = (j * NX + i) * NL;
+        let m = Infinity;
+        for (let l = 0; l < NL; l++) if (LH[b + l] > -Infinity) m = LH[b + l];   // layers are highest first
+        lowCell[j] = m;
+      }
+      // sliding-window minimum over rows j .. j + W (monotonic deque), from the far end back
+      let h = 0, t = 0;
+      for (let j = NZ - 1; j >= 0; j--) {
+        while (t > h && lowCell[dq[t - 1]] >= lowCell[j]) t--;
+        dq[t++] = j;
+        while (dq[h] > j + W) h++;
+        lowAhead[j * NX + i] = lowCell[dq[h]];
+      }
+    }
+  }
+  // Nothing below height y ahead of (x, z), in the ball's lane?
+  function nothingAhead(x, y, z) {
+    for (const dx of [-0.5, 0, 0.5]) {
+      const k = cell(x + dx, z);
+      if (k >= 0 && lowAhead[k] < y) return false;
+    }
+    return true;
+  }
+  // Is there track surface within P.underW sideways of (x, z) that is more than 1 unit above y?
+  function underTrack(x, y, z) {
+    for (let dx = -P.underW; dx <= P.underW + 1e-6; dx += 1) {
+      const k = cell(x + dx, z);
+      if (k >= 0 && L0[k] > y + 1) return true;
+    }
+    return false;
   }
 
   // ---- ball simulation ---------------------------------------------------------------------
@@ -416,10 +465,10 @@
         s.y = yFree; air = true;
         if (s.air === 0) s.air = 1;
       }
-      // sides of platforms, walls of pipes, rims and edges
-      const c = contacts(s, xp, yp, zp);
-      if (c & 1) s.wall = (s.wall || 0) + 1;
-      if (c & 2) air = false;
+      // sides of platforms, walls of pipes, rims
+      const c = contacts(s);
+      if (c === 2) { s.why = 3; return false; }
+      if (c) s.wall = (s.wall || 0) + 1;
       // obstacles, along the whole move
       const n = Math.max(1, Math.ceil(Math.hypot(s.x - xp, s.y - yp, s.z - zp) / 0.5));
       for (let q = 1; q <= n; q++) {
@@ -429,10 +478,12 @@
     }
     if (air) {
       s.air++;
-      // nothing at all below: falling off the side (a jump over a short gap lands in time)
-      s.void = floorAt(s.x, s.z, s.y) === -Infinity ? (s.void || 0) + 1 : 0;
+      // fallen off: under the track that is beside it, with no track below anywhere ahead in
+      // its lane (see buildLowAhead); failing that, airDead catches it
+      if (s.air > 2 && underTrack(s.x, s.y, s.z) && nothingAhead(s.x, s.y, s.z)) s.void = (s.void || 0) + 1;
+      else s.void = 0;
       if (s.air > p.airDead || s.void > p.voidDead) { s.why = 1; return false; }   // fell off
-    } else s.void = 0;
+    } else { s.void = 0; s.gT = t; }
     return true;
   }
 
@@ -469,8 +520,12 @@
       const u = plan(s, t);
       if (first === null) first = u;
       if (u) keys++;
-      // dying later than the near future doesn't erase how close the near future passes to things
-      if (!simStep(s, u, t)) return [t, danger, keys, first, false, t < P.clearSteps ? 0 : clear, air, s.wall || 0];
+      // Dying later than the near future doesn't erase how close the near future passes to
+      // things. A fall counts from when the ball left the ground (it is only noticed later).
+      if (!simStep(s, u, t)) {
+        const td = s.why === 1 ? Math.min(t, (s.gT ?? -1) + 3) : t;
+        return [td, danger, keys, first, false, td < P.clearSteps ? 0 : clear, air, s.wall || 0];
+      }
       danger += nearDanger(s, t) * (1 - t / H);
       if (s.air > 0 && t < P.clearSteps) air++;
       if (t < P.clearSteps) {
@@ -564,28 +619,52 @@
       const H = P.horizon;
       let best = null, bestScore = -Infinity, nPlans = 0;
       const prevTag = this.last && this.last.best, prevSeq = this.seq || [];
+      const survScore = (n) => P.survW * (1 - Math.pow(P.gamma, n));
+      const top = [];   // the best few plans, re-checked for robustness below
       const consider = (plan, tag) => {
+        // real time: the plans are tried in order of importance; stop when time is up (but
+        // always try the basic ones)
+        if (nPlans >= P.minPlans && B.realNow() - t0 > P.budget) return;
         const r = run(start, plan, H); nPlans++;
-        const sc = P.survW * (1 - Math.pow(P.gamma, r[0])) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
+        const sc = survScore(r[0]) - r[1] * 2 - r[2] * 0.02 + P.clearW * Math.max(0, r[5])
           - P.airW * r[6] - P.wallW * Math.min(1, r[7]) + (tag === prevTag || tag === 'prev' ? P.stickW : 0);
-        if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan }; }
+        if (sc > bestScore) { bestScore = sc; best = { u: r[3], r, tag, plan, sc }; }
+        if (top.length < P.robustK || sc > top[top.length - 1].sc) {
+          top.push({ u: r[3], r, tag, plan, sc });
+          top.sort((p, q) => q.sc - p.sc);
+          if (top.length > P.robustK) top.pop();
+        }
       };
       // the previous best plan, as the key sequence it produced, one step on
       if (prevSeq.length > 1) consider((s, t) => prevSeq[t + 1] ?? 0, 'prev');
-      // hold still (no key), steer toward a lateral target, and two-stage target changes
+      // hold still (no key)
       consider(() => 0, 'none');
-      const offs = [];
-      for (let d = -7; d <= 7.01; d += 0.5) offs.push(d);
-      for (const d of offs) consider((s) => toward(s, b[0] + d), 'x' + d);
       // lanes that follow the track: a fraction f across its width, possibly changing lane
       traceTrack(b[0], b[2]);
       const F = [0, 0.15, 0.3, 0.5, 0.7, 0.85, 1];
       // pure pursuit: aim at the lane L steps ahead and close the gap over L steps
       const pursue = (s, f, L) => toward(s, laneX(s.z + L * s.vz, f, s.x), 1 / L);
       for (const f of F) for (const L of [3, 5, 8]) consider((s) => pursue(s, f, L), `lane${f}/${L}`);
+      // steer toward a fixed sideways target
+      for (let d = -7; d <= 7.01; d += 0.5) consider((s) => toward(s, b[0] + d), 'x' + d);
+      // two-stage lane changes
       for (const f1 of F) for (const T1 of [6, 14, 24]) for (const f2 of F) {
         if (f1 === f2) continue;
         consider((s, t) => pursue(s, t < T1 ? f1 : f2, 5), `lane${f1}>${f2}@${T1}`);
+      }
+      // Robustness: the model is never exact, so replay the best few plans from slightly
+      // different starts (sideways speed, forward speed) and judge each by its worst case.
+      if (top.length > 1 && B.realNow() - t0 < P.budget) {
+        let bestR = -Infinity;
+        for (const c of top) {
+          let worst = c.r[0];
+          for (const [dvx, fz] of P.perturb) {
+            const r = run(Object.assign({}, start, { vx: start.vx + dvx, vz: start.vz * (1 + fz) }), c.plan, H);
+            if (r[0] < worst) worst = r[0];
+          }
+          const sc = c.sc - P.robustW * (survScore(c.r[0]) - survScore(worst));
+          if (sc > bestR) { bestR = sc; best = c; }
+        }
       }
       const ui = best ? best.u : 0;
       this.lastPlan = best && best.plan; this.lastStart = start;

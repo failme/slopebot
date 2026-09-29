@@ -75,7 +75,7 @@ def frame_png(e):
 
 def crash_report(seed, out, before=(30, 15, 4)):
     """Play until the crash, then replay and show map + game view shortly before it."""
-    e = open_game(seed); e.js("() => { __bot.norender = true; }")
+    e = open_game(seed, budget=1e9); e.js("() => { __bot.norender = true; }")
     a, t = 0, 0
     while True:
         a, dead, score, last = e.js(STEP_JS, [a, 1, False]); t += 1
@@ -84,7 +84,7 @@ def crash_report(seed, out, before=(30, 15, 4)):
     e.close()
     death = t
     steps = [max(0, death - b) for b in before]
-    e = open_game(seed)
+    e = open_game(seed, budget=1e9)
     a, t, views, frames, pos = 0, 0, {}, {}, []
     while t < death + 2:
         a, dead, score, last = e.js(STEP_JS, [a, 1, False])

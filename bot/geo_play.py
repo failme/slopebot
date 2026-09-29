@@ -21,8 +21,10 @@ STEP_JS = """([a, n, smooth]) => {
   const A = [null, 'ArrowLeft', 'ArrowRight'];
   let dead = false;
   for (let i = 0; i < n && !dead; i++) {
+    // smooth (for watching): three 16.7 ms frames per step; the geometry of the last one is used
+    if (smooth) __bot.run(2, 50 / 3, A[a]);
     __bot.geo.on = true; __bot.geo.begin();
-    if (smooth) __bot.run(3, 50 / 3, A[a]); else __bot.run(1, 50, A[a]);
+    __bot.run(1, smooth ? 50 / 3 : 50, A[a]);
     __bot.geo.on = false;
     dead = __bot.stepped();
     if (!dead) a = __bot.ctl.decide();
@@ -31,18 +33,23 @@ STEP_JS = """([a, n, smooth]) => {
 }"""
 
 
-def open_game(seed, watch=False, window=(960, 720), res=(320, 240)):
+def open_game(seed, watch=False, window=(960, 720), res=(320, 240), budget=None):
+    """budget: planning time per decision in ms (default: the controller's real-time budget).
+    Tools that replay a game and need the same decisions again pass a huge budget."""
     e = SlopeEnv(headless=not watch, width=res[0], height=res[1], seed=seed, window=window if watch else None,
                  gpu=watch, geo=True).open()
     e.page.add_script_tag(path=PLANNER_JS)
     e.page.add_script_tag(path=CTL_JS)
     e.start_game()
     e.js("() => { __bot.findBall(); __bot.ctl.reset(); }")
+    if budget is not None:
+        e.js("b => { __bot.ctlParams.budget = b; }", budget)
     return e
 
 
 def play(seed, watch=False, max_steps=20000, verbose=True, window=(960, 720)):
-    e = open_game(seed, watch, window)
+    budget = float(os.environ["GEO_BUDGET"]) if os.environ.get("GEO_BUDGET") else None   # ms per decision
+    e = open_game(seed, watch, window, res=(640, 480) if watch else (320, 240), budget=budget)
     if not watch:
         e.js("() => { __bot.norender = true; }")   # geometry is still captured
     a, t, t0, score, worst, total_ms = 0, 0, time.time(), 0, 0.0, 0.0

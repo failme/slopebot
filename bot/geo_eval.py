@@ -96,10 +96,10 @@ def death_report(seed, look=60):
         if (n - 1 - t) % 5 == 0 or t >= n - 4:
             h = min(len(p), n - 1 - t)
             err = [round(p[h - 1][i] - B[t + h][i], 2) for i in range(3)] if h > 0 else None
-            print(f"  t-{n - 1 - t:2d}: model with real keys: {'dies ' + ['', 'falling', 'obstacle'][why] + f' at +{len(p)}' if why else 'survives'}"
+            print(f"  t-{n - 1 - t:2d}: model with real keys: {'dies ' + ['', 'falling', 'obstacle', 'crash'][why] + f' at +{len(p)}' if why else 'survives'}"
                   f"; error at death {err}; real air {rows[t]['st'][0]}")
     if foresaw:
-        print(f"  => the model foresaw it {n - 1 - foresaw[0]} steps ahead ({['', 'falling', 'obstacle'][foresaw[1]]}): planning / no escape")
+        print(f"  => the model foresaw it {n - 1 - foresaw[0]} steps ahead ({['', 'falling', 'obstacle', 'crash'][foresaw[1]]}): planning / no escape")
     else:
         print("  => the model did not foresee it: model error")
 
