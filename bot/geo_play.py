@@ -17,7 +17,7 @@ from env import ROOT, SlopeEnv
 
 CTL_JS = os.path.join(ROOT, "bot", "geo_controller.js")
 PLANNER_JS = os.path.join(ROOT, "bot", "planner.js")
-SAFETY_JSON = os.path.join(ROOT, "bot", "safety.json")
+SAFETY_JSON = os.environ.get("GEO_SAFETY") or os.path.join(ROOT, "bot", "safety.json")   # GEO_SAFETY: try other weights
 
 # One decision step inside the page: capture this frame's geometry while advancing 50 ms
 # with the chosen key, then decide the next key.
