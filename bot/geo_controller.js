@@ -36,6 +36,7 @@
     refine: false,            // local search around the best plan when it is in trouble
     safetyW: 50,              // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
     stick: 0,                 // see simStep
+    resid: 0, residClip: 1,   // learned correction of each simulated step (needs B.ctlResid)
     kExp: -0.7, tsRef: 3.25,  // steering acceleration ~ ts^(2 + kExp) (fitted to one-step errors)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
@@ -470,12 +471,39 @@
   let planning = false;
   const margin = (t) => planning ? Math.min(P.marginMax, P.margin0 + P.margin1 * t) : 0;
 
+  // ---- learned correction of the ball model ---------------------------------------------------
+  // A small network (bot/resid.json, trained by bot/train_resid.py on the bot's own games)
+  // predicts how far the real ball's one-step move differs from simStep's: take-offs,
+  // landings and bounces are where the hand-written physics is worst. Its inputs: the state
+  // before the step, what the model did in the step (took off, landed, impact speed), and the
+  // track's height just ahead of the ball.
+  let logFeats = false, lastFeats = null;
+  const AHEAD = [0, 1, 2, 4, 7];
+  function residFeats(pre, s, air, imp) {
+    const f = [pre[0] > 0 ? 1 : 0, Math.min(pre[0], 10) / 10, air ? 1 : 0, pre[0] === 0 && air ? 1 : 0,
+               pre[0] > 0 && !air ? 1 : 0, imp, pre[1], pre[2], pre[3], s.ts, pre[4], pre[5], pre[6], pre[7], s.vy, s.gx, s.gz];
+    for (const dz of AHEAD) {
+      const h = floorAt(s.x, s.z + dz, s.y + 1);
+      f.push(h > -Infinity ? Math.max(-8, Math.min(2, h - s.y)) : -8);
+    }
+    return f;
+  }
+  function residNet(f) {
+    const W = B.ctlResid, n = f.length, H = W.b1.length, x = new Array(n), h = new Array(H);
+    for (let i = 0; i < n; i++) x[i] = (f[i] - W.mu[i]) / W.sd[i];
+    for (let j = 0; j < H; j++) { const r = W.w1[j]; let a = W.b1[j]; for (let i = 0; i < n; i++) a += r[i] * x[i]; h[j] = Math.tanh(a); }
+    return W.w2.map((r, k) => { let a = W.b2[k]; for (let j = 0; j < H; j++) a += r[j] * h[j]; return a * W.osd[k] + W.omu[k]; });
+  }
+
   // ---- ball simulation ---------------------------------------------------------------------
   // s = {x, y, z, vx, vy, vz (displacement per step), u1, u2 (keys held the last two steps),
   //      air (steps airborne), ts (time scale), gx, gz (slopes of the surface it rolls on)}.
   // Returns false when the ball dies.
   function simStep(s, u, t = 0) {
     const p = P, ts = s.ts, s2 = ts * ts;
+    // (the state before the step, for the learned correction below)
+    const pre = (p.resid && B.ctlResid) || logFeats ? [s.air, s.vx, s.vy, s.vz, s.gx, s.gz, s.u1, s.u2] : null;
+    let imp = 0;
     // Velocity changes over the step (the fitted per-step model; velocities are displacements per step).
     const sk = p.kExp ? s2 * Math.pow(ts / p.tsRef, p.kExp) : s2;   // steering grows slower than ts^2
     s.vx += sk * (p.k1 * s.u1 + p.k2 * s.u2);
@@ -509,7 +537,7 @@
         if (s.air > 0 || Math.abs(hit.gx - s.gx) + Math.abs(hit.gz - s.gz) > 0.05) {
           const nx = -hit.gx / N, ny = 1 / N, nz = -hit.gz / N;
           const vn = s.vx * nx + s.vy * ny + s.vz * nz;
-          if (vn < 0) impact(s, nx, ny, nz, vn, 0);
+          if (vn < 0) { impact(s, nx, ny, nz, vn, 0); if (-vn > imp) imp = -vn; }
         }
         s.vy = (yc - yp) / f; s.y = yc; s.air = 0; s.gx = hit.gx; s.gz = hit.gz; s.hs = h; air = false;
       } else {
@@ -525,6 +553,16 @@
       for (let q = 1; q <= n; q++) {
         const w = q / n;
         if (hitsObstacle(xp + w * (s.x - xp), yp + w * (s.y - yp), zp + w * (s.z - zp), p.rad + margin(t), t + (k + w) * f)) { s.why = 2; return false; }
+      }
+    }
+    if (pre) {
+      const f = residFeats(pre, s, air, imp);
+      if (logFeats) lastFeats = f;
+      if (p.resid && B.ctlResid) {
+        const c = residNet(f), L = p.residClip;
+        const cx = Math.max(-L, Math.min(L, c[0])), cy = Math.max(-L, Math.min(L, c[1])), cz = Math.max(-L, Math.min(L, c[2]));
+        s.x += cx; s.vx += cx; s.z += cz; s.vz += cz;
+        if (air) { s.y += cy; s.vy += cy; }   // (a rolling ball stays on its surface)
       }
     }
     if (air) {
@@ -693,8 +731,14 @@
   function adaptBias() {
     if (!lastState || hist.length < 2) return;
     const s = Object.assign({}, lastState);
+    logFeats = !!B.ctl.residLog; lastFeats = null;
     simStep(s, 0, 0);   // (still this map: the new frame's is built later)
+    logFeats = false;
     const err = hist[hist.length - 1][2] - s.z;
+    if (B.ctl.residLog && lastFeats) {
+      const b = hist[hist.length - 1];
+      B.ctl.residLog.push([...lastFeats, b[0] - s.x, b[1] - s.y, err, realAirNow()]);
+    }
     if (B.ctl.errLog) B.ctl.errLog.push([lastState.air, s.air, lastState.gx, lastState.gz, lastState.vx, lastState.ts,
       hist[hist.length - 1][0] - s.x, err, lastState.u1, lastState.u2, lastState.vz, hist[hist.length - 1][1] - s.y, lastState.vy,
       realAirNow(), s.vy]);
