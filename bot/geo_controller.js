@@ -36,7 +36,7 @@
     refine: false,            // local search around the best plan when it is in trouble
     safetyW: 50,              // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
     stick: 0,                 // see simStep
-    resid: 0, residClip: 1,   // learned correction of each simulated step (needs B.ctlResid)
+    resid: 0, residClip: 1, residFly: 0,   // learned correction of each simulated step (needs B.ctlResid)
     kExp: -0.7, tsRef: 3.25,  // steering acceleration ~ ts^(2 + kExp) (fitted to one-step errors)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
@@ -480,8 +480,11 @@
   let logFeats = false, lastFeats = null;
   const AHEAD = [0, 1, 2, 4, 7];
   function residFeats(pre, s, air, imp) {
-    const f = [pre[0] > 0 ? 1 : 0, Math.min(pre[0], 10) / 10, air ? 1 : 0, pre[0] === 0 && air ? 1 : 0,
-               pre[0] > 0 && !air ? 1 : 0, imp, pre[1], pre[2], pre[3], s.ts, pre[4], pre[5], pre[6], pre[7], s.vy, s.gx, s.gz];
+    // (in the air, the state is described as current() describes a real flying ball: no air
+    // counter, surface slope 0 / -1, so simulated and real states look alike to the network)
+    const fl = pre[0] > 0;
+    const f = [fl ? 1 : 0, 0, air ? 1 : 0, !fl && air ? 1 : 0, fl && !air ? 1 : 0, imp, pre[1], pre[2], pre[3], s.ts,
+               fl ? 0 : pre[4], fl ? -1 : pre[5], pre[6], pre[7], s.vy, air ? 0 : s.gx, air ? -1 : s.gz];
     for (const dz of AHEAD) {
       const h = floorAt(s.x, s.z + dz, s.y + 1);
       f.push(h > -Infinity ? Math.max(-8, Math.min(2, h - s.y)) : -8);
@@ -555,10 +558,11 @@
         if (hitsObstacle(xp + w * (s.x - xp), yp + w * (s.y - yp), zp + w * (s.z - zp), p.rad + margin(t), t + (k + w) * f)) { s.why = 2; return false; }
       }
     }
-    if (pre) {
+    // (steady flight is modelled well already: corrected only with residFly)
+    if (pre && (logFeats || p.residFly || !(pre[0] > 0 && air))) {
       const f = residFeats(pre, s, air, imp);
       if (logFeats) lastFeats = f;
-      if (p.resid && B.ctlResid) {
+      if (p.resid && B.ctlResid && (p.residFly || !(pre[0] > 0 && air))) {
         const c = residNet(f), L = p.residClip;
         const cx = Math.max(-L, Math.min(L, c[0])), cy = Math.max(-L, Math.min(L, c[1])), cz = Math.max(-L, Math.min(L, c[2]));
         s.x += cx; s.vx += cx; s.z += cz; s.vz += cz;

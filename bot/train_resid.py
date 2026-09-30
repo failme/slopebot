@@ -23,8 +23,19 @@ def load(paths):
     return rows
 
 
+def canon(f):
+    """The features as residFeats computes them now (older data: air counter, slopes in the air)."""
+    f = list(f)
+    f[1] = 0
+    if f[0] == 1:
+        f[10], f[11] = 0, -1
+    if f[2] == 1:
+        f[15], f[16] = 0, -1
+    return f
+
+
 def matrix(rows):
-    X = np.array([r["f"] for r in rows], np.float32)
+    X = np.array([canon(r["f"]) for r in rows], np.float32)
     Y = np.array([r["err"] for r in rows], np.float32)
     ok = np.all(np.abs(Y) < 2, 1) & np.all(np.isfinite(X), 1)   # (bigger: the ball died or respawned)
     return X[ok], Y[ok], [r for r, k in zip(rows, ok) if k]
