@@ -137,6 +137,10 @@ The last change makes the model's 10-30 step predictions of the ball's sideways 
 perturbed physics models as safety-network features (no better on 17k real-game plans). Retraining
 the safety network on 105k more plans collected with the fitted steering (seeds 301-324) scored
 79.0 on 49-96, so the original weights stay.
+A learned correction of the ball model (`bot/train_resid.py` on 86k steps of the bot's own
+games, `bot/resid_data.py`; off by default, `ctlParams.resid`) cuts one-step errors at take-offs
+by ~75%; applied to the sideways motion only it makes 10-step sideways predictions 35% more
+accurate and false predicted deaths 33% rarer, but scored 83.7 on 49-96 (vs 84.2): no gain.
 
 ## The learned (CNN) bot
 
