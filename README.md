@@ -134,7 +134,9 @@ Results (no time limit, 4 games in parallel; seeds never used for training):
 The last change makes the model's 10-30 step predictions of the ball's sideways position
 ~10-20% more accurate (median error); the score gain is within the noise of 48 games
 (per-seed difference +2.8 ± 6.7). Tried and rejected: adding the plan's survival under
-perturbed physics models as safety-network features (no better on 17k real-game plans).
+perturbed physics models as safety-network features (no better on 17k real-game plans). Retraining
+the safety network on 105k more plans collected with the fitted steering (seeds 301-324) scored
+79.0 on 49-96, so the original weights stay.
 
 ## The learned (CNN) bot
 
