@@ -36,7 +36,7 @@
     refine: false,            // local search around the best plan when it is in trouble
     safetyW: 50,              // weight of log(learned P(plan really survives)) in the plan score (needs B.ctlSafety)
     stick: 0,                 // see simStep
-    resid: 0, residClip: 1, residFly: 0,   // learned correction of each simulated step (needs B.ctlResid)
+    resid: 0, residClip: 1, residFly: 0, residAxes: [1, 1, 1],   // learned correction of each simulated step (needs B.ctlResid)
     kExp: -0.7, tsRef: 3.25,  // steering acceleration ~ ts^(2 + kExp) (fitted to one-step errors)
     adapt: 1, adaptRate: 0.1, adaptClip: 0.06,  // online forward-acceleration correction (see adaptBias)
     robustK: 6, robustW: 0.7, // the best robustK plans are re-run from perturbed starts; weight of their worst case
@@ -564,7 +564,8 @@
       if (logFeats) lastFeats = f;
       if (p.resid && B.ctlResid && (p.residFly || !(pre[0] > 0 && air))) {
         const c = residNet(f), L = p.residClip;
-        const cx = Math.max(-L, Math.min(L, c[0])), cy = Math.max(-L, Math.min(L, c[1])), cz = Math.max(-L, Math.min(L, c[2]));
+        const A = p.residAxes;   // how much of the correction to use along x, y, z
+        const cx = A[0] * Math.max(-L, Math.min(L, c[0])), cy = A[1] * Math.max(-L, Math.min(L, c[1])), cz = A[2] * Math.max(-L, Math.min(L, c[2]));
         s.x += cx; s.vx += cx; s.z += cz; s.vz += cz;
         if (air) { s.y += cy; s.vy += cy; }   // (a rolling ball stays on its surface)
       }
