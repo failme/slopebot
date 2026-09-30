@@ -732,7 +732,7 @@
         if (B.ctlSafety && P.safetyW > 0) sc += P.safetyW * Math.log(Math.max(1e-4, safetyP(r, start, tag)));
         if (this.collect) {
           const kl = keyLog; keyLog = null;
-          this.collect.push({ tag, surv: r[0], sc, keys: kl, vsurv: variantSurv(start, plan, H),
+          this.collect.push({ tag, surv: r[0], sc, keys: kl, vsurv: this.collectVariants ? variantSurv(start, plan, H) : undefined,
             feats: [r[0], r[1], r[2], r[5], r[6], r[7], ...r[8], start.ts, start.vz, start.air > 0 ? 1 : 0, Math.abs(start.gx)] });
           keyLog = null;
         }
